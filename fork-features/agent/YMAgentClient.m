@@ -109,8 +109,10 @@ NSDictionary *YMAgentRequestFromLine(NSString *line, NSString **problem) {
         return @{@"op": op, @"window": numbers[0], @"text": YMRest(trimmed, 2)};
     }
     if ([op isEqualToString:@"key"]) {
-        if (args.count < 2 || numbers.count < 1) { *problem = needs(@"key WINDOW COMBO..."); return nil; }
-        return @{@"op": op, @"window": numbers[0], @"keys": [args subarrayWithRange:NSMakeRange(1, args.count - 1)]};
+        if (args.count < 2) { *problem = needs(@"key WINDOW|APP COMBO..."); return nil; }
+        // A number is a window id; anything else is a session app (bundle id), for menu shortcuts.
+        NSArray *keys = [args subarrayWithRange:NSMakeRange(1, args.count - 1)];
+        return numbers.count ? @{@"op": op, @"window": numbers[0], @"keys": keys} : @{@"op": op, @"app": args[0], @"keys": keys};
     }
     if ([op isEqualToString:@"handoff"]) {
         if (!args.count || numbers.count != args.count) { *problem = needs(@"handoff WINDOW..."); return nil; }

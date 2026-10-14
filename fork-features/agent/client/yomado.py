@@ -88,7 +88,9 @@ class Session:
     def scroll(self, window: int, dy: int, dx: int | None = None, x: float | None = None, y: float | None = None):
         return self.request("scroll", window=window, dy=dy, dx=dx, x=x, y=y)
     def type(self, window: int, text: str): return self.request("type", window=window, text=text)
-    def key(self, window: int, keys: list[str]): return self.request("key", window=window, keys=keys)
+    def key(self, window: int | None, keys: list[str], app: int | str | None = None):
+        """Keys to an owned window; with window=None and `app`, only menu shortcuts such as cmd+n."""
+        return self.request("key", window=window, keys=keys, app=app)
     def handoff(self, windows: list[int]): return self.request("handoff", windows=windows)
     def quit(self, app: int | str): return self.request("quit", app=app)
 

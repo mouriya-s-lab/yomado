@@ -227,6 +227,8 @@ static NSArray<NSString *> *YMLines(NSString *text) {
 @property CGWindowID pointerWindow;
 @property CGPoint pointer;
 @property(copy) NSString *launchingBundleID;
+@property pid_t activePid;         // the app this session last told it is active (synthetic, README D4)
+@property CGWindowID activeWindow; // the window that activation named
 @property CGEventSourceRef keySource;
 @property NSMutableData *buffer; // touched only on the socket queue
 @end
@@ -354,6 +356,7 @@ typedef NSDictionary *(^YMOperation)(YMSession *session, NSDictionary *args, NSE
 - (void)endSession:(YMSession *)session {
     if (session.closed) return;
     session.closed = YES;
+    if (session.activePid) YMPostAppKitDefined(NSEventSubtypeApplicationDeactivated, session.activePid, 0);
     close(session.fd);
     [self.sessions removeObject:session];
     if (!self.sessions.count) self.idleSince = NSDate.date;
@@ -507,6 +510,17 @@ typedef NSDictionary *(^YMOperation)(YMSession *session, NSDictionary *args, NSE
     return nil;
 }
 
+// Pids of applications with a live window this session handed off; forgets closed ones.
+- (NSSet<NSNumber *> *)handedOffPids:(YMSession *)session {
+    NSMutableSet<NSNumber *> *pids = [NSMutableSet set];
+    for (NSNumber *wid in [session.handedOff copy]) {
+        NSDictionary *info = YMCGWindowInfo(wid.unsignedIntValue);
+        if (info) [pids addObject:info[(id)kCGWindowOwnerPID]];
+        else [session.handedOff removeObject:wid];
+    }
+    return pids;
+}
+
 // Adopts new windows of the session's applications and forgets closed ones.
 - (void)sweep:(YMSession *)session {
     for (NSNumber *wid in [session.owned copy]) {
@@ -515,12 +529,14 @@ typedef NSDictionary *(^YMOperation)(YMSession *session, NSDictionary *args, NSE
         [self dropRefsForWindow:wid session:session];
         [session.events addObject:@{@"type": @"window_closed", @"window": wid}];
     }
+    NSSet<NSNumber *> *userPids = [self handedOffPids:session]; // apps the user was handed (README, D5)
     for (NSNumber *pid in [session.apps copy]) {
         NSRunningApplication *app = [NSRunningApplication runningApplicationWithProcessIdentifier:pid.intValue];
         if (!app || app.terminated) { [session.apps removeObject:pid]; continue; }
+        if ([userPids containsObject:pid]) continue;
         for (NSDictionary *window in YMAXWindows(pid.intValue)) {
             NSNumber *wid = window[@"id"];
-            if ([session.owned containsObject:wid] || [session.handedOff containsObject:wid] || [self ownerOf:wid]) continue;
+            if ([session.owned containsObject:wid] || [self ownerOf:wid]) continue;
             [self own:wid.unsignedIntValue pid:pid.intValue session:session];
             NSDictionary *json = YMWindowJSON(wid.unsignedIntValue);
             if (json) [session.events addObject:@{@"type": @"window_adopted", @"window": json}];
@@ -574,9 +590,64 @@ typedef NSDictionary *(^YMOperation)(YMSession *session, NSDictionary *args, NSE
     usleep(15000);
 }
 
-- (void)makeMain:(NSDictionary *)info {
-    id element = YMAXWindowElement([info[(id)kCGWindowOwnerPID] intValue], [info[(id)kCGWindowNumber] unsignedIntValue]);
-    if (element) AXUIElementSetAttributeValue((__bridge AXUIElementRef)element, kAXMainAttribute, kCFBooleanTrue);
+static void YMPostAppKitDefined(NSEventSubtype subtype, pid_t pid, CGWindowID wid) {
+    NSEvent *event = [NSEvent otherEventWithType:NSEventTypeAppKitDefined location:NSZeroPoint modifierFlags:0
+                                       timestamp:NSProcessInfo.processInfo.systemUptime windowNumber:(NSInteger)wid
+                                         context:nil subtype:subtype data1:0 data2:0];
+    if (event.CGEvent) CGEventPostToPid(pid, event.CGEvent);
+}
+
+// Makes the target app treat itself as active and `wid` as its main window, without a
+// WindowServer activation: the user's front app and key window stay where they are (README D4).
+- (void)focusTarget:(pid_t)pid window:(CGWindowID)wid session:(YMSession *)session {
+    // The activation names the window AppKit should treat as key, so it is re-sent when the window changes.
+    if (session.activePid != pid || (wid && session.activeWindow != wid)) {
+        if (session.activePid && session.activePid != pid) YMPostAppKitDefined(NSEventSubtypeApplicationDeactivated, session.activePid, 0);
+        YMPostAppKitDefined(NSEventSubtypeApplicationActivated, pid, wid);
+        session.activePid = pid;
+        session.activeWindow = wid;
+        YMPump(0.05);
+    }
+    // AXRaise makes the window key inside the (synthetically active) app, so posted keys and
+    // window-level menu actions reach it; it does not activate the app.
+    id element = wid ? YMAXWindowElement(pid, wid) : nil;
+    if (element) AXUIElementPerformAction((__bridge AXUIElementRef)element, kAXRaiseAction);
+}
+
+- (void)focusTargetOf:(NSDictionary *)info session:(YMSession *)session {
+    [self focusTarget:[info[(id)kCGWindowOwnerPID] intValue] window:[info[(id)kCGWindowNumber] unsignedIntValue] session:session];
+}
+
+static id YMAXCopy(id element, CFStringRef attribute) {
+    CFTypeRef value = NULL;
+    if (AXUIElementCopyAttributeValue((__bridge AXUIElementRef)element, attribute, &value) != kAXErrorSuccess) return nil;
+    return CFBridgingRelease(value);
+}
+
+typedef NS_ENUM(NSInteger, YMMenuResult) { YMMenuNone, YMMenuDisabled, YMMenuPressed };
+
+// Finds the menu item whose key equivalent is `character` with `flags`, and presses it when enabled.
+// AXMenuItemCmdModifiers: 0 = Command only; +1 Shift, +2 Option, +4 Control.
+- (YMMenuResult)pressMenuItemFor:(NSString *)character flags:(CGEventFlags)flags pid:(pid_t)pid title:(NSString **)title {
+    NSInteger wanted = ((flags & kCGEventFlagMaskShift) ? 1 : 0) | ((flags & kCGEventFlagMaskAlternate) ? 2 : 0)
+                     | ((flags & kCGEventFlagMaskControl) ? 4 : 0);
+    AXUIElementRef app = YMCopyAppElement(pid);
+    id menuBar = YMAXCopy((__bridge id)app, kAXMenuBarAttribute);
+    CFRelease(app);
+    NSMutableArray *queue = [NSMutableArray arrayWithArray:YMAXCopy(menuBar, kAXChildrenAttribute) ?: @[]];
+    for (NSUInteger visited = 0; queue.count && visited < 2000; visited++) {
+        id element = queue.firstObject;
+        [queue removeObjectAtIndex:0];
+        NSString *commandChar = YMAXCopy(element, kAXMenuItemCmdCharAttribute);
+        if ([commandChar isKindOfClass:NSString.class] && [commandChar caseInsensitiveCompare:character] == NSOrderedSame
+            && [YMAXCopy(element, kAXMenuItemCmdModifiersAttribute) integerValue] == wanted) {
+            *title = YMAXCopy(element, kAXTitleAttribute) ?: @"";
+            if (![YMAXCopy(element, kAXEnabledAttribute) boolValue]) return YMMenuDisabled;
+            return AXUIElementPerformAction((__bridge AXUIElementRef)element, kAXPressAction) == kAXErrorSuccess ? YMMenuPressed : YMMenuDisabled;
+        }
+        [queue addObjectsFromArray:YMAXCopy(element, kAXChildrenAttribute) ?: @[]];
+    }
+    return YMMenuNone;
 }
 
 - (void)postKey:(CGKeyCode)code flags:(CGEventFlags)flags text:(NSString *)text pid:(pid_t)pid session:(YMSession *)session {
@@ -591,7 +662,7 @@ typedef NSDictionary *(^YMOperation)(YMSession *session, NSDictionary *args, NSE
         CGEventSetFlags(event, flags);
         CGEventPostToPid(pid, event);
         CFRelease(event);
-        usleep(8000);
+        usleep(3000);
     }
 }
 
@@ -692,6 +763,22 @@ typedef NSDictionary *(^YMOperation)(YMSession *session, NSDictionary *args, NSE
 
 #pragma mark Operations
 
+// Resolves a pid or bundle id to an application this session launched or adopted and
+// has not handed to the user.
+- (NSRunningApplication *)sessionApp:(id)app session:(YMSession *)session error:(NSError **)error {
+    if (!app) YMFAIL(@"usage", @"missing argument \"app\"");
+    NSRunningApplication *running = nil;
+    if (YMIsNumber(app)) running = [NSRunningApplication runningApplicationWithProcessIdentifier:[app intValue]];
+    else if ([app isKindOfClass:NSString.class])
+        for (NSRunningApplication *candidate in [NSRunningApplication runningApplicationsWithBundleIdentifier:app])
+            if ([session.apps containsObject:@(candidate.processIdentifier)]) running = candidate;
+    if (!running || running.terminated || ![session.apps containsObject:@(running.processIdentifier)])
+        YMFAIL(@"not_owned", @"%@ is not an application of this session", app);
+    if ([[self handedOffPids:session] containsObject:@(running.processIdentifier)])
+        YMFAIL(@"not_owned", @"%@ has windows handed off to the user; adopt them first", running.localizedName);
+    return running;
+}
+
 - (NSDictionary<NSString *, YMOperation> *)makeOperations {
     __weak YMAgent *weakSelf = self;
     NSMutableDictionary<NSString *, YMOperation> *ops = [NSMutableDictionary dictionary];
@@ -699,8 +786,9 @@ typedef NSDictionary *(^YMOperation)(YMSession *session, NSDictionary *args, NSE
     ops[@"status"] = ^NSDictionary *(YMSession *session, NSDictionary *args, NSError **error) {
         (void)session; (void)args; (void)error;
         YMAgent *agent = weakSelf;
-        return @{@"version": YMAgentVersion, @"pid": @(getpid()), @"aerospace": @(agent.aerospace != nil),
-                 @"grants": @{@"accessibility": @(AXIsProcessTrusted()), @"screenRecording": @(CGPreflightScreenCaptureAccess())},
+        // Ternaries yield NSNumber booleans; boxing a C int would serialize as a JSON number.
+        return @{@"version": YMAgentVersion, @"pid": @(getpid()), @"aerospace": agent.aerospace ? @YES : @NO,
+                 @"grants": @{@"accessibility": AXIsProcessTrusted() ? @YES : @NO, @"screenRecording": CGPreflightScreenCaptureAccess() ? @YES : @NO},
                  @"sessions": @(agent.sessions.count)};
     };
 
@@ -776,10 +864,10 @@ typedef NSDictionary *(^YMOperation)(YMSession *session, NSDictionary *args, NSE
         if (!started || !launched) { session.launchingBundleID = nil; YMFAIL(started ? @"launch_failed" : @"timeout", @"%@", failure ?: @"launch did not finish"); }
         pid_t pid = launched.processIdentifier;
         [session.apps addObject:@(pid)];
+        // Document apps launched without activation may open no window; that is not an error.
         __block NSArray *windows = nil;
-        BOOL appeared = YMWaitUntil(YMWaitLimit, ^BOOL { windows = YMAXWindows(pid); return windows.count > 0; });
+        YMWaitUntil(5, ^BOOL { windows = YMAXWindows(pid); return windows.count > 0; });
         session.launchingBundleID = nil;
-        if (!appeared) YMFAIL(@"timeout", @"%@ opened no window within 15 s", name);
         NSMutableArray *result = [NSMutableArray array];
         for (NSDictionary *window in windows) {
             [agent own:[window[@"id"] unsignedIntValue] pid:pid session:session];
@@ -787,7 +875,7 @@ typedef NSDictionary *(^YMOperation)(YMSession *session, NSDictionary *args, NSE
             if (json) [result addObject:json];
         }
         YMPump(YMInputSettle);
-        return @{@"windows": result};
+        return @{@"windows": result, @"pid": @(pid), @"bundleId": launched.bundleIdentifier ?: @""};
     };
 
     ops[@"adopt"] = ^NSDictionary *(YMSession *session, NSDictionary *args, NSError **error) {
@@ -895,7 +983,7 @@ typedef NSDictionary *(^YMOperation)(YMSession *session, NSDictionary *args, NSE
             [refs addObject:ref];
             entry[@"ref"] = ref;
             entry[@"actions"] = actions;
-            entry[@"settable"] = @(settable);
+            entry[@"settable"] = settable ? @YES : @NO;
             entry[@"x"] = @(position.x - bounds.origin.x); entry[@"y"] = @(position.y - bounds.origin.y);
             entry[@"width"] = @(size.width); entry[@"height"] = @(size.height);
             [elements addObject:entry];
@@ -946,6 +1034,7 @@ typedef NSDictionary *(^YMOperation)(YMSession *session, NSDictionary *args, NSE
         if (![button isEqualToString:@"left"] && ![button isEqualToString:@"right"]) YMFAIL(@"usage", @"button must be left or right");
         if (count < 1 || count > 3) YMFAIL(@"usage", @"count must be 1, 2 or 3");
         BOOL right = [button isEqualToString:@"right"];
+        [agent focusTargetOf:info session:session];
         [agent postMouse:NSEventTypeMouseMoved info:info at:point clicks:0];
         for (NSInteger n = 1; n <= (NSInteger)count; n++) {
             [agent postMouse:right ? NSEventTypeRightMouseDown : NSEventTypeLeftMouseDown info:info at:point clicks:n];
@@ -969,6 +1058,7 @@ typedef NSDictionary *(^YMOperation)(YMSession *session, NSDictionary *args, NSE
         CGWindowID wid = [info[(id)kCGWindowNumber] unsignedIntValue];
         if (!hasFrom && session.pointerWindow != wid) YMFAIL(@"usage", @"the virtual pointer is not in window %u; give from", wid);
         NSInteger count = MAX(1, MIN(200, (NSInteger)steps));
+        [agent focusTargetOf:info session:session];
         [agent postMouse:NSEventTypeMouseMoved info:info at:from clicks:0];
         [agent postMouse:NSEventTypeLeftMouseDown info:info at:from clicks:1];
         for (NSInteger i = 1; i <= count; i++) {
@@ -991,11 +1081,13 @@ typedef NSDictionary *(^YMOperation)(YMSession *session, NSDictionary *args, NSE
             || !YMArgNumber(args, @"dy", YES, &dy, error) || !YMArgNumber(args, @"dx", NO, &dx, error)) return nil;
         CGWindowID wid = [info[(id)kCGWindowNumber] unsignedIntValue];
         CGRect bounds = YMWindowBounds(info);
+        [agent focusTargetOf:info session:session];
         [agent postMouse:NSEventTypeMouseMoved info:info at:point clicks:0];
         CGEventRef event = CGEventCreateScrollWheelEvent(NULL, kCGScrollEventUnitLine, 2, (int32_t)-dy, (int32_t)-dx);
         CGEventSetLocation(event, CGPointMake(bounds.origin.x + point.x, bounds.origin.y + point.y));
         CGEventSetIntegerValueField(event, kCGMouseEventWindowUnderMousePointer, wid);
         CGEventSetIntegerValueField(event, kCGMouseEventWindowUnderMousePointerThatCanHandleThisEvent, wid);
+        CGEventSetIntegerValueField(event, 51 /* private: window number, as NSEvent-built events carry */, wid);
         YMSetWindowLocation(event, point);
         CGEventPostToPid([info[(id)kCGWindowOwnerPID] intValue], event);
         CFRelease(event);
@@ -1010,7 +1102,7 @@ typedef NSDictionary *(^YMOperation)(YMSession *session, NSDictionary *args, NSE
         NSDictionary *info = [agent ownedWindow:session args:args error:error];
         NSString *text = nil;
         if (!info || !YMArgString(args, @"text", YES, &text, error)) return nil;
-        [agent makeMain:info];
+        [agent focusTargetOf:info session:session];
         pid_t pid = [info[(id)kCGWindowOwnerPID] intValue];
         __block NSUInteger typed = 0;
         [text enumerateSubstringsInRange:NSMakeRange(0, text.length) options:NSStringEnumerationByComposedCharacterSequences
@@ -1025,8 +1117,13 @@ typedef NSDictionary *(^YMOperation)(YMSession *session, NSDictionary *args, NSE
 
     ops[@"key"] = ^NSDictionary *(YMSession *session, NSDictionary *args, NSError **error) {
         YMAgent *agent = weakSelf;
-        NSDictionary *info = [agent ownedWindow:session args:args error:error];
-        if (!info) return nil;
+        // Target: an owned window, or (menu shortcuts only) a session application.
+        NSDictionary *info = nil;
+        NSRunningApplication *target = nil;
+        if (args[@"window"] || !args[@"app"]) {
+            info = [agent ownedWindow:session args:args error:error];
+            if (!info) return nil;
+        } else if (!(target = [agent sessionApp:args[@"app"] session:session error:error])) return nil;
         NSArray *keys = args[@"keys"];
         if (![keys isKindOfClass:NSArray.class] || !keys.count) YMFAIL(@"usage", @"keys must be a non-empty array of strings");
         static NSDictionary<NSString *, NSNumber *> *codes;
@@ -1057,14 +1154,33 @@ typedef NSDictionary *(^YMOperation)(YMSession *session, NSDictionary *args, NSE
                 if (!flag) YMFAIL(@"usage", @"unknown modifier \"%@\"", part);
                 flags |= flag.unsignedLongLongValue;
             }
-            [parsed addObject:@[code, @(flags)]];
+            [parsed addObject:@[code, @(flags), parts.lastObject, combo]];
         }
-        [agent makeMain:info];
-        pid_t pid = [info[(id)kCGWindowOwnerPID] intValue];
-        for (NSArray *key in parsed)
-            [agent postKey:(CGKeyCode)[key[0] unsignedShortValue] flags:[key[1] unsignedLongLongValue] text:nil pid:pid session:session];
+        if (info) [agent focusTargetOf:info session:session];
+        else [agent focusTarget:target.processIdentifier window:0 session:session];
+        pid_t pid = info ? [info[(id)kCGWindowOwnerPID] intValue] : target.processIdentifier;
+        // A background app does not route process-targeted key events through its menus,
+        // so Command shortcuts are performed by pressing the matching menu item (README, D4).
+        // A disabled item usually means the window has not been clicked since it became the target.
+        NSMutableArray *via = [NSMutableArray array];
+        for (NSArray *key in parsed) {
+            CGEventFlags flags = [key[1] unsignedLongLongValue];
+            NSString *title = nil;
+            YMMenuResult menu = (flags & kCGEventFlagMaskCommand) && [key[2] length] == 1
+                ? [agent pressMenuItemFor:key[2] flags:flags pid:pid title:&title] : YMMenuNone;
+            // AppKit revalidates menus on its next update cycle; an item can read as disabled briefly.
+            for (int retry = 0; menu == YMMenuDisabled && retry < 3; retry++) {
+                YMPump(0.1);
+                menu = [agent pressMenuItemFor:key[2] flags:flags pid:pid title:&title];
+            }
+            if (menu == YMMenuPressed) { [via addObject:@{@"key": key[3], @"via": @"menu", @"menu": title}]; continue; }
+            if (menu == YMMenuDisabled) { [via addObject:@{@"key": key[3], @"via": @"menu_disabled", @"menu": title}]; continue; }
+            if (!info) YMFAIL(@"usage", @"no menu item for %@; keys other than menu shortcuts need a window", key[3]);
+            [agent postKey:(CGKeyCode)[key[0] unsignedShortValue] flags:flags text:nil pid:pid session:session];
+            [via addObject:@{@"key": key[3], @"via": @"event"}];
+        }
         YMPump(YMInputSettle);
-        return @{};
+        return @{@"keys": via};
     };
 
     ops[@"handoff"] = ^NSDictionary *(YMSession *session, NSDictionary *args, NSError **error) {
@@ -1119,15 +1235,8 @@ typedef NSDictionary *(^YMOperation)(YMSession *session, NSDictionary *args, NSE
     };
 
     ops[@"quit"] = ^NSDictionary *(YMSession *session, NSDictionary *args, NSError **error) {
-        id app = args[@"app"];
-        NSRunningApplication *running = nil;
-        if (YMIsNumber(app)) running = [NSRunningApplication runningApplicationWithProcessIdentifier:[app intValue]];
-        else if ([app isKindOfClass:NSString.class])
-            for (NSRunningApplication *candidate in [NSRunningApplication runningApplicationsWithBundleIdentifier:app])
-                if ([session.apps containsObject:@(candidate.processIdentifier)]) running = candidate;
-        if (!app) YMFAIL(@"usage", @"missing argument \"app\"");
-        if (!running || ![session.apps containsObject:@(running.processIdentifier)] || ![session ownsPid:running.processIdentifier])
-            YMFAIL(@"not_owned", @"%@ is not an application of this session", app);
+        NSRunningApplication *running = [weakSelf sessionApp:args[@"app"] session:session error:error];
+        if (!running) return nil;
         [running terminate];
         if (!YMWaitUntil(YMWaitLimit, ^BOOL { return running.terminated; })) YMFAIL(@"timeout", @"%@ did not quit within 15 s", running.localizedName);
         [weakSelf sweep:session];

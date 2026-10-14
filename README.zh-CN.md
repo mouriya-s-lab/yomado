@@ -123,7 +123,7 @@ $Y screen delete Agent
 
 ## Agent 会话：不占用你的鼠标键盘操作应用
 
-本 fork 还让 Agent 在虚拟屏上操作应用时不移动你的光标、不抢键盘焦点、不改变你的前台应用。辅助进程 `Contents/Helpers/YomadoAgent.app` 把点击、拖动、滚动和按键直接发给目标窗口所在的进程，并通过 ScreenCaptureKit 与辅助功能读取窗口。Agent 的应用若自己跳到前台，辅助进程会把你的应用切回来，并告知 Agent。
+本 fork 还让 Agent 在虚拟屏上操作应用时不移动你的光标、不抢键盘焦点、不改变你的前台应用。辅助进程 `Contents/Helpers/YomadoAgent.app` 把点击、拖动、滚动和按键直接发给目标窗口所在的进程，让该应用在不被切到前台的情况下认为自己处于活跃状态（因此文本框、菜单和快捷键可用），并通过 ScreenCaptureKit 与辅助功能读取窗口。Agent 的应用若自己跳到前台，辅助进程会把你的应用切回来，并告知 Agent。
 
 Agent 在代码里使用它，会话在多步之间保持：
 

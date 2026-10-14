@@ -31,7 +31,7 @@ ym.drainEvents();                                       // events received so fa
 await ym.close();
 ```
 
-Methods mirror the operations: `status()`, `windows()`, `launch(app)`, `adopt(window)`, `capture({window, path, pointer})`, `ax(window)`, `press(ref, action?)`, `set(ref, value)`, `move(window, x, y)`, `click(window, x?, y?, {button, count})`, `drag(window, to, {from, steps})`, `scroll(window, dy, {dx, x, y})`, `type(window, text)`, `key(window, keys)`, `handoff(windows)`, `quit(app)`, `close()`. A failed request rejects with an `Error` whose `code` is the protocol error code.
+Methods mirror the operations: `status()`, `windows()`, `launch(app)`, `adopt(window)`, `capture({window, path, pointer})`, `ax(window)`, `press(ref, action?)`, `set(ref, value)`, `move(window, x, y)`, `click(window, x?, y?, {button, count})`, `drag(window, to, {from, steps})`, `scroll(window, dy, {dx, x, y})`, `type(window, text)`, `key(window | {app}, keys)`, `handoff(windows)`, `quit(app)`, `close()`. A failed request rejects with an `Error` whose `code` is the protocol error code.
 
 ## Python (omp eval)
 
@@ -73,7 +73,7 @@ $ Yomado agent --screen Agent
 | `drag W X2 Y2 [X1 Y1]` | `drag` |
 | `scroll W DY [DX]` | `scroll` at the virtual pointer |
 | `type W TEXT…` | `type`, text = rest of line |
-| `key W COMBO…` | `key` |
+| `key W COMBO…` / `key BUNDLE_ID COMBO…` | `key` to a window, or menu shortcuts to a session app |
 | `handoff W…` | `handoff` |
 | `quit APP` | `quit` |
 

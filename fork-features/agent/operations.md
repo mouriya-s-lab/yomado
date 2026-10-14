@@ -16,7 +16,7 @@ Conventions:
 | `status` | — | `{"version", "pid", "grants": {"accessibility": bool, "screenRecording": bool}, "aerospace": bool, "sessions": int}` | — |
 | `open` | `screen`: string, default `"Agent"` | `{"session": int, "screen": {"id", "title", "displayID", "bounds", "workspace"}}`. `workspace` is the AeroSpace workspace visible on the screen, or `null` without AeroSpace. | `no_screen`, `yomado_unreachable`, `permission` |
 | `windows` | — | `{"windows": [Window]}`: the session's owned windows | `not_open` |
-| `launch` | `app`: application name, bundle id, or `.app` path | `{"windows": [Window]}`: the new application's windows, now owned and placed on the screen | `app_running`, `launch_failed`, `timeout` |
+| `launch` | `app`: application name, bundle id, or `.app` path | `{"windows": [Window], "pid", "bundleId"}`: the new application's windows that appeared within 5 s, now owned and placed on the screen. `windows` may be empty: a document app launched without activation can open no window until asked, for example with `key` `{"app": pid, "keys": ["cmd+n"]}`; its later windows are adopted automatically. | `app_running`, `launch_failed`, `timeout` |
 | `adopt` | `window`: int | `{"window": Window}` | `no_window`, `not_owned` (another session owns it) |
 | `capture` | `window`: int, optional (omit for the whole screen); `path`: string, optional; `pointer`: bool, default `true` | `{"path", "pixels": {"width","height"}, "scale", "bounds"}`. `scale` is pixels per point. With `pointer`, the virtual pointer is drawn when it lies in the captured area. | `not_owned`, `capture_failed`, `permission` |
 | `ax` | `window`: int | `{"elements": [{"ref", "role", "title", "description", "value", "actions": [string], "settable": bool, "x", "y", "width", "height"}]}`. Only elements that have actions or a settable value are listed; `x`/`y` is the element's top-left corner in window-local points. | `not_owned`, `ax_failed` |
@@ -27,11 +27,11 @@ Conventions:
 | `drag` | `window`; `to`: `{"x","y"}`; `from`: `{"x","y"}`, default the virtual pointer; `steps`: int, default 12 | `{"pointer"}` | `not_owned`, `focus_stolen` |
 | `scroll` | `window`; `dy`: int lines (positive scrolls content down); `dx`: int lines, default 0; `x`, `y` optional (default: the virtual pointer) | `{"pointer"}` | `not_owned`, `focus_stolen` |
 | `type` | `window`; `text`: string | `{"typed": int}`: number of characters | `not_owned`, `focus_stolen` |
-| `key` | `window`; `keys`: [string], each like `return`, `cmd+a`, `shift+tab` | `{}` | `not_owned`, `usage`, `focus_stolen` |
+| `key` | `window`, or `app` (pid or bundle id of a session application, for menu shortcuts only); `keys`: [string], each like `return`, `cmd+a`, `shift+tab` | `{"keys": [{"key", "via", "menu"}]}`: per combination, `via` is `menu` (the menu item named `menu` was pressed), `menu_disabled` (that item stayed disabled for 0.3 s, so nothing happened), or `event` (posted as a key event) | `not_owned`, `usage`, `focus_stolen` |
 | `handoff` | `windows`: [int] | `{"target": {"workspace"} or {"display"}, "windows": [Window]}`: the windows, moved to an empty hidden AeroSpace workspace on a physical monitor (or, without AeroSpace, to the main physical display) and no longer owned | `not_owned`, `no_screen` |
-| `quit` | `app`: pid or bundle id of an agent application of this session | `{}` | `not_owned`, `timeout` |
+| `quit` | `app`: pid or bundle id of an application this session launched or adopted and has not handed off; it may have no windows left | `{}` | `not_owned`, `timeout` |
 
-`type` and `key` deliver to the window's key-window state inside its application: the helper first makes `window` the application's main window through Accessibility, without activating the application.
+`type`, `key` and the pointer operations first make the target application treat itself as active and `window` as its key window (README, D4), without activating the application in WindowServer. A background application does not route posted key events through its menus, so a `key` combination that contains `cmd` and one character (`cmd+a`, `cmd+shift+s`) is performed by pressing the menu item with that key equivalent through Accessibility; other keys, and `cmd` combinations without a menu item, are posted as key events.
 
 ## Key names
 

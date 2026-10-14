@@ -48,4 +48,4 @@ Files:
 - `app/Yomado.m`, marked `fork:`: imports `YMAgentClient.h`; `main()` routes `agent` to the REPL.
 - `build.sh`: builds and signs the helper bundle, copies the clients; `scripts/test-controller-safety.sh`: include path and `YMAgentClient.m`.
 
-Rebase check: re-verify on the installed build that a code-mode session launches an app onto the agent screen, that a background click reaches a SwiftUI control (Calculator keypad), and that the user's front app and AeroSpace focus are unchanged; this relies on the private `CGEventSetWindowLocation` and `_AXUIElementGetWindow`.
+Rebase check: re-verify on the installed build that a code-mode session launches an app onto the agent screen; that a background click reaches a SwiftUI control (Calculator keypad); that in TextEdit, typed text, `cmd+a`/`cmd+b` (`via: menu`) and `scroll` take effect; and that the user's front app and AeroSpace focus are unchanged. This relies on the private `CGEventSetWindowLocation`, `_AXUIElementGetWindow`, event field 51, and pid-posted `NSEventSubtypeApplicationActivated` events.

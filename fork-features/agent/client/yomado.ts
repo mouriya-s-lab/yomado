@@ -116,7 +116,8 @@ export class Session {
 
   status() { return this.request("status") as Promise<Status>; }
   windows() { return this.request("windows") as Promise<{ windows: Window[] }>; }
-  launch(app: string) { return this.request("launch", { app }) as Promise<{ windows: Window[] }>; }
+  /** `windows` may be empty: a document app launched in the background can open none until asked (`key({app: pid}, ["cmd+n"])`). */
+  launch(app: string) { return this.request("launch", { app }) as Promise<{ windows: Window[]; pid: number; bundleId: string }>; }
   adopt(window: number) { return this.request("adopt", { window }) as Promise<{ window: Window }>; }
   capture(options: { window?: number; path?: string; pointer?: boolean } = {}) {
     return this.request("capture", options) as Promise<Capture>;
@@ -135,7 +136,12 @@ export class Session {
     return this.request("scroll", { window, dy, ...options }) as Promise<{ pointer: Pointer }>;
   }
   type(window: number, text: string) { return this.request("type", { window, text }) as Promise<{ typed: number }>; }
-  key(window: number, keys: string[]) { return this.request("key", { window, keys }) as Promise<{}>; }
+  /** Keys to an owned window; with `{app}` (pid or bundle id), only menu shortcuts such as `cmd+n`. */
+  key(target: number | { app: number | string }, keys: string[]) {
+    return this.request("key", { ...(typeof target === "number" ? { window: target } : target), keys }) as Promise<{
+      keys: { key: string; via: "menu" | "menu_disabled" | "event"; menu?: string }[];
+    }>;
+  }
   handoff(windows: number[]) {
     return this.request("handoff", { windows }) as Promise<{ target: { workspace: string } | { display: number }; windows: Window[] }>;
   }

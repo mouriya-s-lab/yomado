@@ -117,7 +117,7 @@ The command talks to the running app through a per-user socket, `~/Library/Appli
 
 ## Agent sessions: operate apps without your pointer
 
-This fork also lets an agent operate apps on a virtual screen without moving your pointer, taking keyboard focus or changing your front app. A helper, `Contents/Helpers/YomadoAgent.app`, sends clicks, drags, scrolls and keys straight to the target window's process and reads windows through ScreenCaptureKit and Accessibility. If an agent's app brings itself to the front, the helper puts your app back and tells the agent.
+This fork also lets an agent operate apps on a virtual screen without moving your pointer, taking keyboard focus or changing your front app. A helper, `Contents/Helpers/YomadoAgent.app`, sends clicks, drags, scrolls and keys straight to the target window's process, makes that app treat itself as active without bringing it forward (so text fields, menus and shortcuts work), and reads windows through ScreenCaptureKit and Accessibility. If an agent's app brings itself to the front, the helper puts your app back and tells the agent.
 
 Agents use it from code, keeping the session across steps:
 
