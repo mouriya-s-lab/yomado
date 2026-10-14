@@ -498,10 +498,18 @@ typedef NSDictionary *(^YMOperation)(YMSession *session, NSDictionary *args, NSE
     [session.owned addObject:@(wid)];
     [session.handedOff removeObject:@(wid)];
     [session.apps addObject:@(pid)];
-    if (![self moveWindow:wid pid:pid toDisplay:session.displayID workspace:[self workspaceForSession:session]]) return;
-    // AeroSpace moves the window asynchronously; report bounds only once it is on the screen.
+    [self moveWindow:wid pid:pid toDisplay:session.displayID workspace:[self workspaceForSession:session]];
+}
+
+// AeroSpace moves windows asynchronously, and a hidden application's windows are off the window list until it is
+// revealed; callers report bounds only once the windows are on the session's screen.
+- (void)waitOnScreen:(NSArray<NSNumber *> *)wids session:(YMSession *)session {
     CGRect display = CGDisplayBounds(session.displayID);
-    YMWaitUntil(3, ^BOOL { return CGRectIntersectsRect(YMWindowBounds(YMCGWindowInfo(wid)), display); });
+    YMWaitUntil(3, ^BOOL {
+        for (NSNumber *wid in wids)
+            if (!CGRectIntersectsRect(YMWindowBounds(YMCGWindowInfo(wid.unsignedIntValue)), display)) return NO;
+        return YES;
+    });
 }
 
 // A window has at most one owner session.
@@ -521,6 +529,13 @@ typedef NSDictionary *(^YMOperation)(YMSession *session, NSDictionary *args, NSE
     return pids;
 }
 
+// A session application launches hidden and is revealed once a window of it is on the agent screen, so its first
+// window never appears where the user is working (README, D6). The helper does not hide applications later: a
+// window manager may unhide hidden applications at any time, so hiding is not a placement mechanism.
+static void YMReveal(NSRunningApplication *app, BOOL hasPlacedWindow) {
+    if (hasPlacedWindow && app.hidden) [app unhide];
+}
+
 // Adopts new windows of the session's applications and forgets closed ones.
 - (void)sweep:(YMSession *)session {
     for (NSNumber *wid in [session.owned copy]) {
@@ -534,10 +549,19 @@ typedef NSDictionary *(^YMOperation)(YMSession *session, NSDictionary *args, NSE
         NSRunningApplication *app = [NSRunningApplication runningApplicationWithProcessIdentifier:pid.intValue];
         if (!app || app.terminated) { [session.apps removeObject:pid]; continue; }
         if ([userPids containsObject:pid]) continue;
+        BOOL placed = NO;
+        NSMutableArray<NSNumber *> *adopted = [NSMutableArray array];
         for (NSDictionary *window in YMAXWindows(pid.intValue)) {
             NSNumber *wid = window[@"id"];
-            if ([session.owned containsObject:wid] || [self ownerOf:wid]) continue;
+            if ([session.owned containsObject:wid] || [self ownerOf:wid]) { placed = YES; continue; }
             [self own:wid.unsignedIntValue pid:pid.intValue session:session];
+            [adopted addObject:wid];
+            placed = YES;
+        }
+        YMReveal(app, placed);
+        if (!adopted.count) continue;
+        [self waitOnScreen:adopted session:session];
+        for (NSNumber *wid in adopted) {
             NSDictionary *json = YMWindowJSON(wid.unsignedIntValue);
             if (json) [session.events addObject:@{@"type": @"window_adopted", @"window": json}];
         }
@@ -600,6 +624,8 @@ static void YMPostAppKitDefined(NSEventSubtype subtype, pid_t pid, CGWindowID wi
 // Makes the target app treat itself as active and `wid` as its main window, without a
 // WindowServer activation: the user's front app and key window stay where they are (README D4).
 - (void)focusTarget:(pid_t)pid window:(CGWindowID)wid session:(YMSession *)session {
+    // A hidden application unhides itself when it is activated; it stays hidden until its windows are placed (D6).
+    if ([NSRunningApplication runningApplicationWithProcessIdentifier:pid].hidden) return;
     // The activation names the window AppKit should treat as key, so it is re-sent when the window changes.
     if (session.activePid != pid || (wid && session.activeWindow != wid)) {
         if (session.activePid && session.activePid != pid) YMPostAppKitDefined(NSEventSubtypeApplicationDeactivated, session.activePid, 0);
@@ -853,6 +879,7 @@ typedef NS_ENUM(NSInteger, YMMenuResult) { YMMenuNone, YMMenuDisabled, YMMenuPre
         session.launchingBundleID = bundleID;
         NSWorkspaceOpenConfiguration *config = [NSWorkspaceOpenConfiguration configuration];
         config.activates = NO;
+        config.hides = YES; // revealed once its windows are on the agent screen (README, D6)
         config.addsToRecentItems = NO;
         __block NSRunningApplication *launched = nil;
         __block NSString *failure = nil;
@@ -868,9 +895,15 @@ typedef NS_ENUM(NSInteger, YMMenuResult) { YMMenuNone, YMMenuDisabled, YMMenuPre
         __block NSArray *windows = nil;
         YMWaitUntil(5, ^BOOL { windows = YMAXWindows(pid); return windows.count > 0; });
         session.launchingBundleID = nil;
-        NSMutableArray *result = [NSMutableArray array];
+        NSMutableArray<NSNumber *> *ids = [NSMutableArray array];
         for (NSDictionary *window in windows) {
             [agent own:[window[@"id"] unsignedIntValue] pid:pid session:session];
+            [ids addObject:window[@"id"]];
+        }
+        YMReveal(launched, windows.count > 0);
+        [agent waitOnScreen:ids session:session];
+        NSMutableArray *result = [NSMutableArray array];
+        for (NSDictionary *window in windows) {
             NSDictionary *json = YMWindowJSON([window[@"id"] unsignedIntValue]);
             if (json) [result addObject:json];
         }
@@ -887,6 +920,7 @@ typedef NS_ENUM(NSInteger, YMMenuResult) { YMMenuNone, YMMenuDisabled, YMMenuPre
         YMSession *owner = [weakSelf ownerOf:@(wid)];
         if (owner && owner != session) YMFAIL(@"not_owned", @"window %u is owned by session %ld", wid, (long)owner.sessionID);
         [weakSelf own:wid pid:[info[(id)kCGWindowOwnerPID] intValue] session:session];
+        [weakSelf waitOnScreen:@[@(wid)] session:session];
         return @{@"window": YMWindowJSON(wid) ?: @{}};
     };
 
@@ -1156,9 +1190,10 @@ typedef NS_ENUM(NSInteger, YMMenuResult) { YMMenuNone, YMMenuDisabled, YMMenuPre
             }
             [parsed addObject:@[code, @(flags), parts.lastObject, combo]];
         }
+        pid_t pid = info ? [info[(id)kCGWindowOwnerPID] intValue] : target.processIdentifier;
+        BOOL hidden = [NSRunningApplication runningApplicationWithProcessIdentifier:pid].hidden;
         if (info) [agent focusTargetOf:info session:session];
         else [agent focusTarget:target.processIdentifier window:0 session:session];
-        pid_t pid = info ? [info[(id)kCGWindowOwnerPID] intValue] : target.processIdentifier;
         // A background app does not route process-targeted key events through its menus,
         // so Command shortcuts are performed by pressing the matching menu item (README, D4).
         // A disabled item usually means the window has not been clicked since it became the target.
@@ -1180,6 +1215,8 @@ typedef NS_ENUM(NSInteger, YMMenuResult) { YMMenuNone, YMMenuDisabled, YMMenuPre
             [via addObject:@{@"key": key[3], @"via": @"event"}];
         }
         YMPump(YMInputSettle);
+        // A shortcut sent to a hidden application may have created its first window; place and reveal it now.
+        if (hidden) [agent sweep:session];
         return @{@"keys": via};
     };
 
