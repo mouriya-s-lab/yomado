@@ -50,6 +50,11 @@ NSString *_Nullable YMControlNameProblem(NSString *name);
 - (void)invalidate;
 @end
 
+// Sends one request to the running app (launching it in the background when it
+// is not running) and returns its reply object. Returns nil with `problem` set
+// when yomado cannot be reached or does not answer.
+NSDictionary *_Nullable YMControlSend(YMControlRequest *request, NSString *_Nullable *_Nonnull problem);
+
 // Entry point for `Yomado screen ...`; returns the process exit status.
 int YMControlClientMain(int argc, const char *_Nonnull argv[_Nonnull]);
 

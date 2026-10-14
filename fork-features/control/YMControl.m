@@ -341,14 +341,19 @@ static NSDictionary *YMControlArguments(NSArray<NSString *> *args, NSString **pr
     return json;
 }
 
+// The outermost .app around this executable: Yomado.app for both the app binary
+// and the nested YomadoAgent helper.
 static NSString *YMControlBundlePath(void) {
     char raw[PATH_MAX];
     uint32_t size = sizeof(raw);
     char resolved[PATH_MAX];
     if (_NSGetExecutablePath(raw, &size) != 0 || !realpath(raw, resolved)) return NSBundle.mainBundle.bundlePath;
-    // .../Yomado.app/Contents/MacOS/Yomado
-    return [NSString stringWithUTF8String:resolved].stringByDeletingLastPathComponent
-        .stringByDeletingLastPathComponent.stringByDeletingLastPathComponent;
+    NSString *path = @"/";
+    for (NSString *component in [NSString stringWithUTF8String:resolved].pathComponents) {
+        path = [path stringByAppendingPathComponent:component];
+        if ([component hasSuffix:@".app"]) return path;
+    }
+    return NSBundle.mainBundle.bundlePath;
 }
 
 static BOOL YMControlAppRunning(void) {
@@ -387,6 +392,18 @@ static int YMControlConnectOrLaunch(NSString *path, NSString **problem) {
     return -1;
 }
 
+NSDictionary *YMControlSend(YMControlRequest *request, NSString **problem) {
+    int fd = YMControlConnectOrLaunch(YMControlSocketPath(), problem);
+    if (fd < 0) return nil;
+    // Display creation waits for topology verification; allow generous time.
+    YMControlSetTimeout(fd, 90);
+    NSData *reply = YMControlWriteAll(fd, YMControlLine(request.JSONObject)) ? YMControlReadLine(fd, 1024 * 1024) : nil;
+    close(fd);
+    NSDictionary *response = reply.length ? [NSJSONSerialization JSONObjectWithData:reply options:0 error:nil] : nil;
+    if (![response isKindOfClass:NSDictionary.class]) { *problem = @"no reply from yomado"; return nil; }
+    return response;
+}
+
 int YMControlClientMain(int argc, const char *argv[]) {
     @autoreleasepool {
         NSMutableArray<NSString *> *args = [NSMutableArray array];
@@ -403,14 +420,8 @@ int YMControlClientMain(int argc, const char *argv[]) {
             YMControlUsage(stderr);
             return 2;
         }
-        int fd = YMControlConnectOrLaunch(YMControlSocketPath(), &problem);
-        if (fd < 0) { fprintf(stderr, "error: %s\n", problem.UTF8String); return 3; }
-        // Display creation waits for topology verification; allow generous time.
-        YMControlSetTimeout(fd, 90);
-        NSData *reply = YMControlWriteAll(fd, YMControlLine(request.JSONObject)) ? YMControlReadLine(fd, 1024 * 1024) : nil;
-        close(fd);
-        NSDictionary *response = reply.length ? [NSJSONSerialization JSONObjectWithData:reply options:0 error:nil] : nil;
-        if (![response isKindOfClass:NSDictionary.class]) { fprintf(stderr, "error: no reply from yomado\n"); return 3; }
+        NSDictionary *response = YMControlSend(request, &problem);
+        if (!response) { fprintf(stderr, "error: %s\n", problem.UTF8String); return 3; }
         NSData *pretty = [NSJSONSerialization dataWithJSONObject:response
             options:NSJSONWritingPrettyPrinted | NSJSONWritingSortedKeys | NSJSONWritingWithoutEscapingSlashes error:nil];
         fwrite(pretty.bytes, 1, pretty.length, stdout);

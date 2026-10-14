@@ -21,7 +21,7 @@ sequenceDiagram
 
 Files:
 
-- `fork-features/control/YMControl.{h,m}`: request type and validation, socket server, CLI client.
+- `fork-features/control/YMControl.{h,m}`: request type and validation, socket server, CLI client, and `YMControlSend` (also used by the agent helper).
 - `app/Yomado.m`, marked `fork:`:
   - imports `YMControl.h`;
   - adds the `controlServer` and `controlRequestActive` properties;
@@ -35,3 +35,17 @@ Files:
 - Docs: `README.md`, `README.zh-CN.md`, `skills/yomado/SKILL.md`.
 
 Rebase check: if upstream adds its own scripting or control interface, migrate to it and drop this feature. Otherwise re-verify on the installed build that `screen create/start/close` change `aerospace list-monitors` (or System Settings → Displays) without showing the panel, and that `close` refuses with a reason while a window remains on the screen and Accessibility permission is off.
+
+## agent: agent sessions (`Yomado agent`, code-mode clients)
+
+Lets an AI agent operate apps on a yomado screen without the user's pointer, focus or front app, from a REPL or from omp `eval` code. The design, protocol and clients are in [agent/README.md](agent/README.md) and its appendices.
+
+Files:
+
+- `fork-features/agent/YomadoAgent.m` and `Info.plist`: the helper, built as the nested bundle `Contents/Helpers/YomadoAgent.app`.
+- `fork-features/agent/YMAgentClient.{h,m}`, `YMAgentPaths.h`: the `Yomado agent` REPL and shared paths.
+- `fork-features/agent/client/yomado.{ts,py}`: code-mode clients, installed in `Contents/Resources/agent/`.
+- `app/Yomado.m`, marked `fork:`: imports `YMAgentClient.h`; `main()` routes `agent` to the REPL.
+- `build.sh`: builds and signs the helper bundle, copies the clients; `scripts/test-controller-safety.sh`: include path and `YMAgentClient.m`.
+
+Rebase check: re-verify on the installed build that a code-mode session launches an app onto the agent screen, that a background click reaches a SwiftUI control (Calculator keypad), and that the user's front app and AeroSpace focus are unchanged; this relies on the private `CGEventSetWindowLocation` and `_AXUIElementGetWindow`.

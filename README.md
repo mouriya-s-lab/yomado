@@ -115,6 +115,23 @@ $Y screen delete Agent
 
 The command talks to the running app through a per-user socket, `~/Library/Application Support/dev.chekusu.yomado/control.sock`, readable only by you. When yomado is not running, the command launches it in the background without activating it or showing the control panel. `create`, `start` and `close` return only after display verification has finished, and they use the same checks as the panel. A refusal, such as `close` while windows remain and Accessibility permission is missing, is reported in the reply instead of an alert. `configure` and `delete` require a closed screen; `rename` of a running screen changes the system display name at its next start.
 
+## Agent sessions: operate apps without your pointer
+
+This fork also lets an agent operate apps on a virtual screen without moving your pointer, taking keyboard focus or changing your front app. A helper, `Contents/Helpers/YomadoAgent.app`, sends clicks, drags, scrolls and keys straight to the target window's process and reads windows through ScreenCaptureKit and Accessibility. If an agent's app brings itself to the front, the helper puts your app back and tells the agent.
+
+Agents use it from code, keeping the session across steps:
+
+```js
+// omp eval (Bun)
+const { connect } = await import("/Applications/Yomado.app/Contents/Resources/agent/yomado.ts");
+globalThis.ym = await connect({ screen: "Agent" });
+const [calc] = (await ym.launch("Calculator")).windows;
+await ym.type(calc.id, "12*3"); await ym.key(calc.id, ["return"]);
+const { path } = await ym.capture({ window: calc.id });
+```
+
+A Python client (`Contents/Resources/agent/yomado.py`) offers the same calls, and `Yomado agent --screen Agent` is a line REPL (`launch Calculator`, `click 7057 34 211`, …). The helper starts on demand with the Accessibility and Screen Recording grants of the agent's own tool, so yomado itself needs no extra grant. The agent's windows still share the login session with you: macOS has one key window, so this keeps the agent out of your way rather than giving it a second keyboard. Design and protocol: [fork-features/agent/README.md](fork-features/agent/README.md).
+
 ## Version and updates
 
 The panel footer links to [yomado.app](https://yomado.app/), this GitHub repository and the MIT license, alongside the installed version. Click the refresh icon next to the version, or **Check for Updates…** (`检查更新…`) in the menu-bar menu. The menu bar uses a transparent, monochrome silhouette of the night-window logo that follows the system appearance; the full app icon keeps its dark background.

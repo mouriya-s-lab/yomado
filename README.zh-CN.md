@@ -121,6 +121,23 @@ $Y screen delete Agent
 
 命令通过仅当前用户可读写的套接字 `~/Library/Application Support/dev.chekusu.yomado/control.sock` 与运行中的应用通信。yomado 未运行时，命令会在后台启动它，不激活应用，也不显示控制面板。`create`、`start`、`close` 会等显示配置核对完成后才返回，与面板使用相同的检查。被拒绝的情况（例如屏上仍有窗口且未开启辅助功能权限时 `close`）写在回复里，不弹出提示框。`configure` 和 `delete` 只适用于已关闭的屏幕；对运行中的屏幕 `rename`，系统显示器名称在下次启动时更新。
 
+## Agent 会话：不占用你的鼠标键盘操作应用
+
+本 fork 还让 Agent 在虚拟屏上操作应用时不移动你的光标、不抢键盘焦点、不改变你的前台应用。辅助进程 `Contents/Helpers/YomadoAgent.app` 把点击、拖动、滚动和按键直接发给目标窗口所在的进程，并通过 ScreenCaptureKit 与辅助功能读取窗口。Agent 的应用若自己跳到前台，辅助进程会把你的应用切回来，并告知 Agent。
+
+Agent 在代码里使用它，会话在多步之间保持：
+
+```js
+// omp eval（Bun）
+const { connect } = await import("/Applications/Yomado.app/Contents/Resources/agent/yomado.ts");
+globalThis.ym = await connect({ screen: "Agent" });
+const [calc] = (await ym.launch("Calculator")).windows;
+await ym.type(calc.id, "12*3"); await ym.key(calc.id, ["return"]);
+const { path } = await ym.capture({ window: calc.id });
+```
+
+Python 客户端（`Contents/Resources/agent/yomado.py`）提供相同调用；`Yomado agent --screen Agent` 是逐行 REPL（`launch Calculator`、`click 7057 34 211` 等）。辅助进程按需启动，沿用 Agent 所用工具已有的辅助功能与屏幕录制授权，yomado 本身不需要额外授权。Agent 的窗口仍与你共用同一登录会话：macOS 只有一个 key window，所以这是让 Agent 不妨碍你，而不是给它第二套键盘。设计与协议见 [fork-features/agent/README.md](fork-features/agent/README.md)。
+
 ## 版本与检查更新
 
 面板底部显示当前版本，并提供 [yomado.app](https://yomado.app/)、GitHub 源码和 MIT 协议入口。点击版本旁的刷新图标，或菜单栏菜单中的「检查更新…」。菜单栏只保留夜窗 logo 的窗子轮廓，背景透明、颜色跟随系统外观；应用图标仍保留完整深色底图。
