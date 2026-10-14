@@ -18,7 +18,7 @@ Let the agent prepare its own work screen; the user does not need to create it m
 
 ## Prepare the screen
 
-Run screen management through the app binary; it prints one JSON object and never opens the panel:
+Run screen management through the app binary. It never opens the panel, and every reply that reaches yomado is one JSON object on stdout (usage errors and an unreachable yomado print an `error:` line on stderr):
 
 ```sh
 Y=/Applications/Yomado.app/Contents/MacOS/Yomado

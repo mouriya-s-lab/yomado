@@ -111,7 +111,7 @@ $Y screen configure Agent --size 2560x1440 --hidpi
 $Y screen delete Agent
 ```
 
-`SCREEN` is a screen id (its number), its name, or its full title such as `虚拟屏 1 · Agent`. Each command prints one JSON object (`"ok": true` with the affected screen, or `"ok": false` with the reason) and exits 0 on success, 1 when yomado refuses or the operation fails, 2 on a usage error, and 3 when yomado cannot be reached.
+`SCREEN` is a screen id (its number), its name, or its full title such as `虚拟屏 1 · Agent`. Each command that reaches yomado prints one JSON object on stdout: `"ok": true` with the affected screen, or `"ok": false` with the reason. Usage errors and an unreachable yomado print a plain `error:` line on stderr instead. Exit status is 0 on success, 1 when yomado refuses or the operation fails, 2 on a usage error, and 3 when yomado cannot be reached.
 
 The command talks to the running app through a per-user socket, `~/Library/Application Support/dev.chekusu.yomado/control.sock`, readable only by you. When yomado is not running, the command launches it in the background without activating it or showing the control panel. `create`, `start` and `close` return only after display verification has finished, and they use the same checks as the panel. A refusal, such as `close` while windows remain and Accessibility permission is missing, is reported in the reply instead of an alert. `configure` and `delete` require a closed screen; `rename` of a running screen changes the system display name at its next start.
 

@@ -309,7 +309,8 @@ static void YMControlUsage(FILE *stream) {
           "  configure SCREEN [--size 1920x1080|2560x1440] [--hidpi|--no-hidpi]\n"
           "  delete SCREEN            (closed screens only)\n"
           "SCREEN is a screen id (its number), its name, or its full title.\n"
-          "Prints one JSON object. Exit status: 0 ok, 1 refused or failed, 2 usage, 3 yomado unreachable.\n", stream);
+          "Replies from yomado are one JSON object on stdout; usage errors and an unreachable yomado print an error line on stderr.\n"
+          "Exit status: 0 ok, 1 refused or failed, 2 usage, 3 yomado unreachable.\n", stream);
 }
 
 // Parses `screen` arguments into the same JSON object the server validates.

@@ -117,7 +117,7 @@ $Y screen configure Agent --size 2560x1440 --hidpi
 $Y screen delete Agent
 ```
 
-`SCREEN` 可以是屏幕编号、名称，或完整标题（如 `虚拟屏 1 · Agent`）。每条命令输出一个 JSON 对象：成功时为 `"ok": true` 及相关屏幕，失败时为 `"ok": false` 及原因。退出码：0 成功，1 被 yomado 拒绝或操作失败，2 用法错误，3 无法连接 yomado。
+`SCREEN` 可以是屏幕编号、名称，或完整标题（如 `虚拟屏 1 · Agent`）。到达 yomado 的命令在 stdout 输出一个 JSON 对象：成功时为 `"ok": true` 及相关屏幕，失败时为 `"ok": false` 及原因。用法错误和无法连接 yomado 时，改为在 stderr 输出一行 `error:` 文本。退出码：0 成功，1 被 yomado 拒绝或操作失败，2 用法错误，3 无法连接 yomado。
 
 命令通过仅当前用户可读写的套接字 `~/Library/Application Support/dev.chekusu.yomado/control.sock` 与运行中的应用通信。yomado 未运行时，命令会在后台启动它，不激活应用，也不显示控制面板。`create`、`start`、`close` 会等显示配置核对完成后才返回，与面板使用相同的检查。被拒绝的情况（例如屏上仍有窗口且未开启辅助功能权限时 `close`）写在回复里，不弹出提示框。`configure` 和 `delete` 只适用于已关闭的屏幕；对运行中的屏幕 `rename`，系统显示器名称在下次启动时更新。
 
