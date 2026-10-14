@@ -28,7 +28,7 @@ yomado 主要是为了支持 **Codex 或其他 Agent 通过视觉操作电脑**�
 
 > 用 $yomado 为这次 Blender 任务准备一块叫「Codex · Blender」的虚拟屏。只移入本任务的窗口，确认你能看到并操作它们，完成后恢复原位置。
 
-在 Codex 中，将仓库的 `skills/yomado` 文件夹安装到 `$CODEX_HOME/skills`（默认为 `~/.codex/skills`），下一轮对话即可使用；其他 Agent 可以通过自己的 skill 机制读取同一份 `SKILL.md`。需要先安装 yomado，并为 Agent 配备电脑操作工具；首次 macOS 系统授权由你完成。skill 使用现有应用界面，仍与当前桌面共用焦点和输入。
+在 Codex 中，将仓库的 `skills/yomado` 文件夹安装到 `$CODEX_HOME/skills`（默认为 `~/.codex/skills`），下一轮对话即可使用；其他 Agent 可以通过自己的 skill 机制读取同一份 `SKILL.md`。需要先安装 yomado，并为 Agent 配备电脑操作工具；首次 macOS 系统授权由你完成。skill 用 [`screen` 命令](#命令行控制虚拟屏)启动、命名和关闭虚拟屏，通过应用界面移动窗口，仍与当前桌面共用焦点和输入。
 
 ![yomado 使用示意：两台熄屏的实体显示器、保持运行的 Mac，以及右侧显示三维和服装设计窗口的虚拟桌面。](docs/images/yomado-usage-night-window.png)
 
@@ -101,6 +101,25 @@ dist/Yomado.zip
 通过 yomado 移入的普通 App 会保留本次运行中的原窗口位置；在虚拟屏之间转移时沿用最初的位置。拖回原实体屏会恢复原位；拖到另一块实体屏则在该屏居中。自行手动移入、没有原位置记录的窗口，也会在你选中的实体屏居中。图标的通用返回操作优先使用原位置；没有记录时返回当前实体主屏。普通 App 的窗口记录保存在内存中；名称与分辨率偏好会保存到本机。软件不会在登录或重启后自动创建虚拟屏。多个虚拟屏仍共用同一套键鼠和焦点，不意味着多个 Agent 可以同时独占输入。
 
 Yomado 不修改密码、锁屏策略、屏保或登录设置；保持唤醒的请求不能解锁 Mac。截图和输入权限由执行这些操作的工具自行管理。
+
+## 命令行控制虚拟屏
+
+本 fork 给应用二进制增加了 `screen` 命令，脚本和 Agent 无需打开面板或点击菜单即可管理虚拟屏：
+
+```sh
+Y=/Applications/Yomado.app/Contents/MacOS/Yomado
+$Y screen list
+$Y screen create --name Agent --size 1920x1080   # 可选：--hidpi
+$Y screen start Agent
+$Y screen close Agent
+$Y screen rename Agent "Agent · Blender"
+$Y screen configure Agent --size 2560x1440 --hidpi
+$Y screen delete Agent
+```
+
+`SCREEN` 可以是屏幕编号、名称，或完整标题（如 `虚拟屏 1 · Agent`）。每条命令输出一个 JSON 对象：成功时为 `"ok": true` 及相关屏幕，失败时为 `"ok": false` 及原因。退出码：0 成功，1 被 yomado 拒绝或操作失败，2 用法错误，3 无法连接 yomado。
+
+命令通过仅当前用户可读写的套接字 `~/Library/Application Support/dev.chekusu.yomado/control.sock` 与运行中的应用通信。yomado 未运行时，命令会在后台启动它，不激活应用，也不显示控制面板。`create`、`start`、`close` 会等显示配置核对完成后才返回，与面板使用相同的检查。被拒绝的情况（例如屏上仍有窗口且未开启辅助功能权限时 `close`）写在回复里，不弹出提示框。`configure` 和 `delete` 只适用于已关闭的屏幕；对运行中的屏幕 `rename`，系统显示器名称在下次启动时更新。
 
 ## 版本与检查更新
 
@@ -182,6 +201,8 @@ bash ./scripts/test-layout.sh
 ## 实现
 
 `app/ControlUI.*` 和 `app/AppWorkspaceView.*` 绘制原生屏幕排列、应用图标及拖放目标；`app/AppWorkspace.*` 管理通用 App 的窗口归属与位置恢复；`app/WindowRecovery.*` 及纯策略头文件处理主动启用的微信窗口检查点。`app/Yomado.m` 包含 AppKit 应用和测试入口；`app/Watchdog.m` 是恢复进程源码；`bridge/VDVirtualDisplay.*` 封装虚拟显示器接口。应用命名空间为 `dev.chekusu.yomado`。
+
+`fork-features/control/YMControl.*` 实现 `screen` 命令：请求校验、应用内的控制套接字服务端和命令行客户端。`app/Yomado.m` 把每个请求映射到菜单和面板所用的同一套屏幕操作。
 
 实现使用私有 `CGVirtualDisplay` 类，并动态发现 `CGSConfigureDisplayEnabled` / `SLSConfigureDisplayEnabled`，运行时检查相关功能是否可用。Apple 不保证这些接口长期兼容。
 

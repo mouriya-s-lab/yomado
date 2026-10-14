@@ -5,7 +5,7 @@ description: "Prepare and manage yomado virtual work screens on macOS using exis
 
 # yomado
 
-Let the agent prepare its own work screen; the user does not need to create it manually. Operate the installed yomado app through the agent's existing computer-use tools. This skill supplies the workflow, not a separate screenshot/input tool or management API.
+Let the agent prepare its own work screen; the user does not need to create it manually. Manage screens with yomado's `screen` command and move windows through the installed app with the agent's existing computer-use tools. This skill supplies the workflow, not a separate screenshot/input tool.
 
 ## Before changing anything
 
@@ -18,13 +18,20 @@ Let the agent prepare its own work screen; the user does not need to create it m
 
 ## Prepare the screen
 
-1. Open yomado's control panel from its menu-bar item or by opening the installed app. Opening an existing instance brings back its panel; do not quit or restart it to find the panel.
-2. Inspect the live UI. In v0.3.3, the menu-bar accessibility label is `yomado · 夜窗` and its panel item is `打开控制面板`. Labels may change in later versions; use current observations, not fixed coordinates.
-3. If no suitable task-owned screen exists, use the header **+**, then `新增虚拟屏`. To start a saved screen, inspect that screen's submenu in the same menu. Use the screen's **…** menu → `重命名…`, enter a name such as `Codex · Blender`, then `保存`.
-4. Record the new screen's actual ID/bounds/scale. A renamed running screen can retain its old name in macOS until restarted; do not restart merely to synchronize the name.
+Run screen management through the app binary; it prints one JSON object and never opens the panel:
+
+```sh
+Y=/Applications/Yomado.app/Contents/MacOS/Yomado
+$Y screen list
+```
+
+1. Run `$Y screen list`. It starts yomado in the background when it is not running. Each screen has an `id`, `name`, `title`, `running`, size and HiDPI setting; running screens also report `displayID` and `verified`.
+2. If a suitable task-owned screen is saved but closed, `$Y screen start SCREEN`. Otherwise `$Y screen create --name "Codex · Blender"` (add `--size 2560x1440` or `--hidpi` when needed). `SCREEN` is an id, a name or a full title. Both commands return after display verification; a non-zero exit carries the reason in `error`.
+3. To rename an existing screen, `$Y screen rename SCREEN NEW_NAME`. A renamed running screen keeps its old macOS display name until it is started again (`systemNameUpdatesOnNextStart`); do not restart merely to synchronize the name.
+4. Record the screen's `displayID`, and its bounds and scale from the display inventory.
 5. Compare the display arrangement and main display with the checkpoint before moving apps. Adding or removing displays can rearrange the desktop in released versions. If an existing screen moved, stop and report the discrepancy; do not continue moving user windows or silently change the main display. Resolve layout only within the user's authority.
 
-Keep physical outputs enabled and a physical display as main during ordinary setup. Do not change power, lock, login or display settings just because the task needs a work screen. Resolution/HiDPI controls apply to a stopped screen; do not stop an occupied screen to change them.
+Keep physical outputs enabled and a physical display as main during ordinary setup. Do not change power, lock, login or display settings just because the task needs a work screen. `$Y screen configure SCREEN --size … --hidpi|--no-hidpi` applies only to a closed screen; do not close an occupied screen to change it.
 
 ## Move only the task's windows
 
@@ -58,9 +65,11 @@ Screen creation, an accessibility tree, a running process or a synthetic preview
 - For a yomado-managed app, its icon on a virtual screen offers a return menu (right-click, or focus and press Space/Return where supported). Opening that menu does not itself restore the app. Select `返回原显示器`; without a stored checkpoint the label is `移回实体屏`.
 - Ordinary app checkpoints are held in memory for the current yomado run and survive transfers between virtual screens. Returning to the recorded original physical screen restores its placement. A different destination, or no checkpoint, centers windows instead; use the private pre-move record to verify/recover exact placement when supported. Do not promise exact restoration without evidence.
 - WeChat has additional recovery behavior: a pending checkpoint takes priority and returns to its original physical display. Return it there before a further virtual-screen transfer. Restoring its window cannot restore an expired login.
-- Confirm restored bounds. Close a task-created screen only after its work is saved, its windows are accounted for, and no other task needs it. Use that screen's **…** → `关闭这块虚拟屏`; never use **Quit yomado** to close one screen. Verify the remaining layout afterwards. If recovery is refused or uncertain, leave the screen running and report it.
+- Confirm restored bounds. Close a task-created screen only after its work is saved, its windows are accounted for, and no other task needs it. Use `$Y screen close SCREEN`; never quit yomado to close one screen. `close` first returns the screen's yomado-managed windows; when it cannot (for example, Accessibility permission is missing while windows remain), it exits non-zero and keeps the screen. Verify the remaining layout afterwards, and report a refused or uncertain recovery instead of retrying. `$Y screen delete SCREEN` removes a closed screen's saved profile when it is no longer wanted.
 - Report the screen used, apps moved, screenshot/input checks actually completed, and whether the screen remains available or was closed. State any unresolved recovery or targeting limitation.
 
-## Current command-line boundary
+## Command-line boundary
 
-The public v0.3.3 app has `--diagnose` for local capability/display diagnostics. It has no public create/move/restore CLI or management RPC; do not invent or probe such commands, including `--help` (unknown arguments open the normal app UI). Do not add `--include-device-identifiers` to shared diagnostics. `--preview-ui` renders sample data, while `--self-test` and `--watchdog-test` are developer tests that can change displays; none is a normal work-screen setup command.
+`Yomado screen list|create|start|close|rename|configure|delete` manages screens; `Yomado screen help` prints its usage. Exit status is 0 on success, 1 when yomado refuses or the operation fails, 2 on a usage error, and 3 when yomado cannot be reached. Window movement has no command; use the app's UI as described above.
+
+`--diagnose` prints local capability/display diagnostics; do not add `--include-device-identifiers` to shared diagnostics. `--preview-ui` renders sample data, while `--self-test` and `--watchdog-test` are developer tests that can change displays; none is a work-screen setup command. Do not probe other arguments: unknown arguments open the normal app UI.

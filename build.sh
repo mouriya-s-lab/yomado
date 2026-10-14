@@ -67,11 +67,11 @@ ym_flags=(
   "-fdebug-prefix-map=$ym_stage=."
 )
 
-"$ym_clang" "${ym_flags[@]}" -I "$ym_root/bridge" \
+"$ym_clang" "${ym_flags[@]}" -I "$ym_root/bridge" -I "$ym_root/fork-features/control" \
   "$ym_root/app/Yomado.m" "$ym_root/app/ControlUI.m" "$ym_root/app/WindowRecovery.m" \
   "$ym_root/app/UpdateChecker.m" "$ym_root/app/MenuBarIcon.m" "$ym_root/app/PanelPresentation.m" \
   "$ym_root/app/AppWorkspace.m" "$ym_root/app/AppWorkspaceView.m" "$ym_root/bridge/VDVirtualDisplay.m" \
-  "$ym_root/bridge/YMDisplayTopology.m" \
+  "$ym_root/bridge/YMDisplayTopology.m" "$ym_root/fork-features/control/YMControl.m" \
   -framework AppKit -framework CoreGraphics -framework ColorSync -framework IOKit -framework Carbon -framework ApplicationServices -framework QuartzCore \
   -o "$ym_bundle/Contents/MacOS/Yomado"
 

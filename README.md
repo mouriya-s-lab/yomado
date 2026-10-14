@@ -28,7 +28,7 @@ You do not have to create a virtual screen or arrange its apps yourself. The inc
 
 > Use $yomado to prepare a virtual screen named “Codex · Blender” for this task. Move only this task's windows, verify that you can see and operate them, and restore them when finished.
 
-For Codex, install the repository's `skills/yomado` folder in `$CODEX_HOME/skills` (default: `~/.codex/skills`); it is available from the next turn. Other agents can read the same `SKILL.md` using their skill mechanism. yomado and the agent's computer-use tools must be installed; you handle initial macOS permission grants. The skill uses the app's existing UI and shares the desktop's focus and input.
+For Codex, install the repository's `skills/yomado` folder in `$CODEX_HOME/skills` (default: `~/.codex/skills`); it is available from the next turn. Other agents can read the same `SKILL.md` using their skill mechanism. yomado and the agent's computer-use tools must be installed; you handle initial macOS permission grants. The skill starts, names and closes screens with the [`screen` command](#control-screens-from-the-command-line), moves windows through the app's UI, and shares the desktop's focus and input.
 
 ![yomado usage concept: two dark physical monitors, an awake Mac, and a virtual desktop on the right with 3D and garment-design windows.](docs/images/yomado-usage-night-window.png)
 
@@ -95,6 +95,25 @@ Keep yomado running while using its displays. The app appears in both the Dock a
 For ordinary apps moved through yomado, original placement is held in memory for this run and survives transfers between virtual displays. Dropping back on the original physical display restores that placement. Dropping on a different physical display centers the windows there; manually moved windows without a checkpoint are also centered on the chosen physical display. The icon’s general return action uses the recorded original display, or the current physical main display when no checkpoint exists. Friendly names and resolution preferences are saved locally. Displays are not automatically recreated at login or after a restart. Multiple displays still share keyboard, pointer and focus; they do not give agents independent input sessions.
 
 Yomado does not change passwords, lock-screen policy, screen savers, or login settings. Its wake requests do not unlock a Mac. Screenshot and input permissions remain the responsibility of the tools that perform those actions.
+
+## Control screens from the command line
+
+This fork adds a `screen` command to the app binary, so scripts and agents can manage virtual screens without opening the panel or clicking menus:
+
+```sh
+Y=/Applications/Yomado.app/Contents/MacOS/Yomado
+$Y screen list
+$Y screen create --name Agent --size 1920x1080   # optional: --hidpi
+$Y screen start Agent
+$Y screen close Agent
+$Y screen rename Agent "Agent · Blender"
+$Y screen configure Agent --size 2560x1440 --hidpi
+$Y screen delete Agent
+```
+
+`SCREEN` is a screen id (its number), its name, or its full title such as `虚拟屏 1 · Agent`. Each command prints one JSON object (`"ok": true` with the affected screen, or `"ok": false` with the reason) and exits 0 on success, 1 when yomado refuses or the operation fails, 2 on a usage error, and 3 when yomado cannot be reached.
+
+The command talks to the running app through a per-user socket, `~/Library/Application Support/dev.chekusu.yomado/control.sock`, readable only by you. When yomado is not running, the command launches it in the background without activating it or showing the control panel. `create`, `start` and `close` return only after display verification has finished, and they use the same checks as the panel. A refusal, such as `close` while windows remain and Accessibility permission is missing, is reported in the reply instead of an alert. `configure` and `delete` require a closed screen; `rename` of a running screen changes the system display name at its next start.
 
 ## Version and updates
 
@@ -178,6 +197,8 @@ Generated view images are **not** screenshots of Blender, Marvelous Designer, or
 `bridge/YMDisplayTopology.*` handles bounded display transactions and fail-closed verification; synthetic backend tests do not change live displays. DisplayLink hardware compatibility still requires testing on the specific dock, driver and macOS version.
 
 `app/Yomado.m` contains the AppKit app and test entry points. `app/ControlUI.*` and `app/AppWorkspaceView.*` draw the native screen layout, application icons and drag targets; `app/AppWorkspace.*` manages ordinary app window ownership and original placement; `app/WindowRecovery.*` and its pure policy header handle the opt-in WeChat window checkpoint. `app/Watchdog.m` contains the recovery helper; `bridge/VDVirtualDisplay.*` wraps the virtual-display interface. The application namespace is `dev.chekusu.yomado`.
+
+`fork-features/control/YMControl.*` implements the `screen` command: request validation, the control-socket server inside the app, and the command-line client. `app/Yomado.m` maps each request onto the same screen operations the menu and panel use.
 
 The implementation uses private `CGVirtualDisplay` classes and dynamically discovers `CGSConfigureDisplayEnabled` / `SLSConfigureDisplayEnabled`. Feature availability is checked at runtime. Apple does not promise compatibility for these interfaces.
 

@@ -15,6 +15,7 @@
 #import "UpdateChecker.h"
 #import "MenuBarIcon.h"
 #import "PanelPresentation.h"
+#import "YMControl.h" // fork: fork-features/control
 
 static NSString *YMAppVersion(void) {
     return [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"—";
@@ -189,9 +190,14 @@ static NSString *JSONText(id object) { return JSONTextWithIdentifiers(object, NO
 @property IOPMAssertionID displayAssertion;
 @property EventHotKeyRef hotkey;
 @property EventHandlerRef keyHandler;
+@property YMControlServer *controlServer; // fork: screen control CLI
+@property BOOL controlRequestActive;       // fork: a CLI request owns error reporting; no alerts
 - (void)restore:(id)sender;
 - (void)buildWindow;
 - (void)updateInventory;
+@end
+@interface ADController (YMControl) // fork: implemented at the end of this file
+- (void)handleControlRequest:(YMControlRequest *)request reply:(YMControlReply)reply;
 @end
 
 static OSStatus RecoveryHotkey(EventHandlerCallRef next, EventRef event, void *data) {
@@ -247,7 +253,7 @@ static NSView *YMSpacer(void) {
 - (void)reportTopologyError:(NSError *)error {
     self.statusLabel.stringValue = @"显示配置未通过检查";
     self.detailLabel.stringValue = error.localizedDescription ?: @"未能确认原有屏幕配置保持不变；已停止移入应用。";
-    if (!self.previewMode && self.window && !self.window.attachedSheet) {
+    if (!self.previewMode && !self.controlRequestActive && self.window && !self.window.attachedSheet) {
         NSAlert *alert = [[NSAlert alloc] init];
         alert.messageText = @"工作屏未就绪";
         alert.informativeText = self.detailLabel.stringValue;
@@ -333,7 +339,16 @@ static NSView *YMSpacer(void) {
         self.detailLabel.stringValue = @"恢复快捷键注册失败；为保留恢复途径，实体屏关闭功能已停用。";
     }
     [self updateInventory];
-    [self showWindow:nil];
+    // fork: `Yomado screen ...` launches the app with --background; keep the panel hidden.
+    if (![NSProcessInfo.processInfo.arguments containsObject:@"--background"]) [self showWindow:nil];
+    NSError *controlError = nil;
+    __weak ADController *weakSelf = self;
+    self.controlServer = [[YMControlServer alloc] initWithHandler:^(YMControlRequest *request, YMControlReply reply) {
+        ADController *controller = weakSelf;
+        if (controller) [controller handleControlRequest:request reply:reply];
+        else reply(YMControlFailure(@"yomado is shutting down"));
+    } error:&controlError];
+    if (!self.controlServer) NSLog(@"yomado: screen control CLI unavailable: %@", controlError.localizedDescription);
     self.heartbeatTimer = [NSTimer scheduledTimerWithTimeInterval:1.0 target:self selector:@selector(tick:)
                                                        userInfo:nil repeats:YES];
     [NSWorkspace.sharedWorkspace.notificationCenter addObserver:self selector:@selector(systemWillSleep:)
@@ -401,16 +416,23 @@ static NSView *YMSpacer(void) {
     self.virtualDisplay = profile.display;
     [self updateInventory];
 }
+// fork: shared by the menu's 新增虚拟屏 and `Yomado screen create`.
+- (YMManagedDisplay *)appendProfileNamed:(NSString *)name width:(NSUInteger)width hiDPI:(BOOL)hiDPI {
+    NSUInteger ordinal = 1;
+    for (YMManagedDisplay *profile in self.displayProfiles) ordinal = MAX(ordinal, profile.ordinal + 1);
+    if (ordinal > UINT16_MAX) return nil;
+    NSString *resolved = name ?: (ordinal == 2 ? @"GrokBot" : [NSString stringWithFormat:@"Agent %lu", (unsigned long)ordinal]);
+    YMManagedDisplay *profile = [self newProfileWithOrdinal:ordinal name:resolved width:width
+                                                     height:width == 2560 ? 1440 : 1080 hiDPI:hiDPI];
+    [self.displayProfiles addObject:profile];
+    [self saveDisplayProfiles];
+    return profile;
+}
 - (void)addDisplay:(id)sender {
     (void)sender;
     if (self.previewMode || self.topologyRecoverySnapshot || self.armed || self.preparing || self.restoring || self.layoutChangedForTrial || self.displayOperationInProgress || self.appOperationInProgress) return;
-    NSUInteger ordinal = 1;
-    for (YMManagedDisplay *profile in self.displayProfiles) ordinal = MAX(ordinal, profile.ordinal + 1);
-    if (ordinal > UINT16_MAX) { self.detailLabel.stringValue = @"已达到可用的屏幕编号上限。"; return; }
-    NSString *name = ordinal == 2 ? @"GrokBot" : [NSString stringWithFormat:@"Agent %lu", (unsigned long)ordinal];
-    YMManagedDisplay *profile = [self newProfileWithOrdinal:ordinal name:name width:1920 height:1080 hiDPI:NO];
-    [self.displayProfiles addObject:profile];
-    [self saveDisplayProfiles];
+    YMManagedDisplay *profile = [self appendProfileNamed:nil width:1920 hiDPI:NO];
+    if (!profile) { self.detailLabel.stringValue = @"已达到可用的屏幕编号上限。"; return; }
     [self selectProfile:profile];
     [self create:nil];
 }
@@ -828,7 +850,7 @@ static NSView *YMSpacer(void) {
 - (void)reportApplicationError:(NSError *)error fallback:(NSString *)fallback {
     self.detailLabel.stringValue = error.localizedDescription ?: fallback;
     self.statusLabel.stringValue = @"应用窗口操作未完成";
-    if (!self.previewMode && !self.window.attachedSheet) {
+    if (!self.previewMode && !self.controlRequestActive && !self.window.attachedSheet) {
         NSAlert *alert = [[NSAlert alloc] init];
         alert.messageText = @"未能移动窗口";
         alert.informativeText = self.detailLabel.stringValue;
@@ -1505,11 +1527,132 @@ static NSView *YMSpacer(void) {
 - (void)applicationWillTerminate:(NSNotification *)notification {
     if (self.previewMode) return;
     (void)notification;
+    [self.controlServer invalidate];
     [NSNotificationCenter.defaultCenter removeObserver:self];
     [self.heartbeatTimer invalidate];
     if (self.hotkey) UnregisterEventHotKey(self.hotkey);
     if (self.keyHandler) RemoveEventHandler(self.keyHandler);
     [self powerAssertions:NO];
+}
+@end
+
+#pragma mark - Fork: screen control CLI (fork-features/control)
+
+@implementation ADController (YMControl)
+- (NSDictionary *)controlDescriptionOfProfile:(YMManagedDisplay *)profile {
+    NSMutableDictionary *screen = [@{@"id": @(profile.ordinal), @"name": profile.friendlyName, @"title": [self titleForProfile:profile],
+        @"running": @(profile.display.isCreated), @"width": @(profile.width), @"height": @(profile.height), @"hiDPI": @(profile.hiDPI)} mutableCopy];
+    if (profile.display.isCreated) {
+        screen[@"displayID"] = @(profile.display.displayID);
+        screen[@"verified"] = @(profile.topologyVerified);
+    }
+    return screen;
+}
+// SCREEN is matched by id (ordinal), then exact name, then exact title.
+- (YMManagedDisplay *)controlProfileMatching:(NSString *)key problem:(NSString **)problem {
+    NSInteger ordinal = key.integerValue;
+    BOOL numeric = ordinal > 0 && [key isEqualToString:[NSString stringWithFormat:@"%ld", (long)ordinal]];
+    for (YMManagedDisplay *profile in self.displayProfiles) if (numeric && profile.ordinal == (NSUInteger)ordinal) return profile;
+    for (YMManagedDisplay *profile in self.displayProfiles) if ([profile.friendlyName isEqualToString:key]) return profile;
+    for (YMManagedDisplay *profile in self.displayProfiles) if ([[self titleForProfile:profile] isEqualToString:key]) return profile;
+    NSMutableArray *known = [NSMutableArray array];
+    for (YMManagedDisplay *profile in self.displayProfiles) [known addObject:[self titleForProfile:profile]];
+    *problem = [NSString stringWithFormat:@"no screen matches \"%@\"; known screens: %@", key, [known componentsJoinedByString:@", "]];
+    return nil;
+}
+- (NSString *)controlBusyReason {
+    if (self.topologyRecoverySnapshot) return @"a display arrangement recovery is pending; retry it from the yomado menu first";
+    if (self.displayOperationInProgress || self.appOperationInProgress) return @"another display or window operation is in progress; retry shortly";
+    if (self.armed || self.preparing || self.restoring || self.layoutChangedForTrial || self.recoveryRequested)
+        return @"a physical-output trial or its recovery is in progress";
+    return nil;
+}
+- (NSString *)controlFailureText {
+    return self.detailLabel.stringValue.length ? self.detailLabel.stringValue : self.statusLabel.stringValue;
+}
+// create:/stop: finish asynchronously through topology verification; poll their
+// shared in-progress flag on the main queue, then report the profile's final state.
+- (void)controlAwait:(YMManagedDisplay *)profile running:(BOOL)wantRunning deadline:(NSDate *)deadline reply:(YMControlReply)reply {
+    if (self.displayOperationInProgress && deadline.timeIntervalSinceNow > 0) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [self controlAwait:profile running:wantRunning deadline:deadline reply:reply];
+        });
+        return;
+    }
+    self.controlRequestActive = NO;
+    if (self.displayOperationInProgress) { reply(YMControlFailure(@"timed out waiting for the display operation; check `Yomado screen list`")); return; }
+    BOOL reached = profile.display.isCreated == wantRunning && (!wantRunning || profile.topologyVerified);
+    reply(reached ? YMControlSuccess(@{@"screen": [self controlDescriptionOfProfile:profile]}) : YMControlFailure([self controlFailureText]));
+}
+- (void)controlSwitch:(YMManagedDisplay *)profile on:(BOOL)on reply:(YMControlReply)reply {
+    [self selectProfile:profile];
+    if (self.selectedProfile != profile) { reply(YMControlFailure(@"could not select the screen; another operation is in progress")); return; }
+    self.controlRequestActive = YES;
+    if (on) [self create:nil];
+    else [self stop:nil];
+    [self controlAwait:profile running:on deadline:[NSDate dateWithTimeIntervalSinceNow:60] reply:reply];
+}
+- (void)handleControlRequest:(YMControlRequest *)request reply:(YMControlReply)reply {
+    if (request.command == YMControlCommandList) {
+        NSMutableArray *screens = [NSMutableArray array];
+        for (YMManagedDisplay *profile in self.displayProfiles) [screens addObject:[self controlDescriptionOfProfile:profile]];
+        reply(YMControlSuccess(@{@"screens": screens}));
+        return;
+    }
+    NSString *busy = [self controlBusyReason];
+    if (request.command == YMControlCommandCreate) {
+        if (busy) { reply(YMControlFailure(busy)); return; }
+        YMManagedDisplay *profile = [self appendProfileNamed:request.name width:request.width ?: 1920 hiDPI:request.hiDPI == YMControlHiDPIOn];
+        if (!profile) { reply(YMControlFailure(@"no screen ids left")); return; }
+        [self controlSwitch:profile on:YES reply:reply];
+        return;
+    }
+    NSString *problem = nil;
+    YMManagedDisplay *profile = [self controlProfileMatching:request.screen problem:&problem];
+    if (!profile) { reply(YMControlFailure(problem)); return; }
+    BOOL running = profile.display.isCreated;
+    switch (request.command) {
+        case YMControlCommandStart:
+        case YMControlCommandClose: {
+            BOOL on = request.command == YMControlCommandStart;
+            if (running == on) { reply(YMControlSuccess(@{@"screen": [self controlDescriptionOfProfile:profile], @"unchanged": @YES})); return; }
+            if (busy) { reply(YMControlFailure(busy)); return; }
+            [self controlSwitch:profile on:on reply:reply];
+            return;
+        }
+        case YMControlCommandRename:
+            if (busy) { reply(YMControlFailure(busy)); return; }
+            profile.friendlyName = request.name;
+            [self saveDisplayProfiles];
+            [self updateInventory];
+            // A running display keeps its system name until it is started again.
+            reply(YMControlSuccess(@{@"screen": [self controlDescriptionOfProfile:profile], @"systemNameUpdatesOnNextStart": @(running)}));
+            return;
+        case YMControlCommandConfigure:
+            if (running) { reply(YMControlFailure(@"close the screen before changing its size or HiDPI setting")); return; }
+            if (busy) { reply(YMControlFailure(busy)); return; }
+            if (request.width) { profile.width = request.width; profile.height = request.width == 2560 ? 1440 : 1080; }
+            if (request.hiDPI != YMControlHiDPIUnchanged) profile.hiDPI = request.hiDPI == YMControlHiDPIOn;
+            [self saveDisplayProfiles];
+            [self updateInventory];
+            reply(YMControlSuccess(@{@"screen": [self controlDescriptionOfProfile:profile]}));
+            return;
+        case YMControlCommandDelete:
+            if (running) { reply(YMControlFailure(@"close the screen before deleting it")); return; }
+            if (busy) { reply(YMControlFailure(busy)); return; }
+            [self.displayProfiles removeObject:profile];
+            if (self.selectedProfile == profile) {
+                self.selectedProfile = self.displayProfiles.firstObject;
+                self.virtualDisplay = self.selectedProfile.display;
+            }
+            [self saveDisplayProfiles];
+            [self updateInventory];
+            reply(YMControlSuccess(@{@"deleted": [self controlDescriptionOfProfile:profile]}));
+            return;
+        case YMControlCommandList:
+        case YMControlCommandCreate:
+            break; // handled above
+    }
 }
 @end
 
@@ -1748,6 +1891,7 @@ static int PreviewUI(NSString *path, NSString *state, BOOL dark) {
 
 int main(int argc, const char *argv[]) {
     @autoreleasepool {
+        if (argc > 1 && strcmp(argv[1], "screen") == 0) return YMControlClientMain(argc, argv); // fork
         if (argc > 1 && strcmp(argv[1], "--preview-ui") == 0) {
             if (argc < 3 || argc > 5 || (argc == 5 && strcmp(argv[4], "light") != 0 && strcmp(argv[4], "dark") != 0)) {
                 fprintf(stderr, "Usage: Yomado --preview-ui <png-path> [empty|running|multi|trial] [light|dark]\n");
