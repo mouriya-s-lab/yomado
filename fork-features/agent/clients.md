@@ -77,4 +77,4 @@ $ Yomado agent --screen Agent
 | `handoff W…` | `handoff` |
 | `quit APP` | `quit` |
 
-Each response is printed on one line. End of input closes the session.
+Each response is printed on one line. End of input (Ctrl-D on an empty line) closes the session. On a terminal the REPL reads input itself rather than in canonical mode, so a line has no 1024-byte limit; it supports Backspace and Ctrl-U (clear line). From a pipe it reads plain lines.

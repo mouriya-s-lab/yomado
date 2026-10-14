@@ -4,6 +4,7 @@
 #import <spawn.h>
 #import <sys/socket.h>
 #import <sys/un.h>
+#import <termios.h>
 #import <unistd.h>
 
 extern char **environ;
@@ -204,6 +205,56 @@ static NSData *YMReadLine(int fd, NSMutableData *buffer) {
     }
 }
 
+#pragma mark - Input
+
+static struct termios YMSavedTerminal;
+
+static void YMRestoreTerminal(void) { tcsetattr(STDIN_FILENO, TCSANOW, &YMSavedTerminal); }
+
+static void YMEnterRawInput(void) {
+    if (tcgetattr(STDIN_FILENO, &YMSavedTerminal) != 0) return;
+    atexit(YMRestoreTerminal);
+    struct termios raw = YMSavedTerminal;
+    raw.c_lflag &= ~(tcflag_t)(ICANON | ECHO); // keep ISIG: Ctrl-C still interrupts
+    raw.c_cc[VMIN] = 1;
+    raw.c_cc[VTIME] = 0;
+    tcsetattr(STDIN_FILENO, TCSANOW, &raw);
+}
+
+// Reads one line from a non-canonical terminal with minimal editing: Backspace,
+// Ctrl-U (clear), Ctrl-D on an empty line (end of input). Returns nil at end of input.
+static NSData *YMReadTerminalLine(void) {
+    NSMutableData *line = [NSMutableData data];
+    for (;;) {
+        unsigned char c;
+        ssize_t n = read(STDIN_FILENO, &c, 1);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) return line.length ? line : nil;
+        if (c == '\r' || c == '\n') { fputs("\r\n", stdout); fflush(stdout); return line; }
+        if (c == 0x04) { if (!line.length) { fputs("\r\n", stdout); return nil; } continue; }
+        if (c == 0x7f || c == 0x08) {
+            // Drop one UTF-8 character: continuation bytes are 10xxxxxx.
+            const unsigned char *bytes = line.bytes;
+            NSUInteger length = line.length;
+            while (length && (bytes[length - 1] & 0xC0) == 0x80) length--;
+            if (length) { length--; fputs("\b \b", stdout); fflush(stdout); }
+            line.length = length;
+            continue;
+        }
+        if (c == 0x15) { line.length = 0; fputs("\r\x1b[K> ", stdout); fflush(stdout); continue; }
+        [line appendBytes:&c length:1];
+        fwrite(&c, 1, 1, stdout);
+        fflush(stdout);
+    }
+}
+
+static NSData *YMReadPipeLine(void) {
+    static char *raw = NULL;
+    static size_t capacity = 0;
+    ssize_t length = getline(&raw, &capacity, stdin);
+    return length < 0 ? nil : [NSData dataWithBytes:raw length:(NSUInteger)length];
+}
+
 int YMAgentClientMain(int argc, const char *argv[]) {
     @autoreleasepool {
         NSString *screen = @"Agent";
@@ -222,13 +273,14 @@ int YMAgentClientMain(int argc, const char *argv[]) {
         fwrite(reply.bytes, 1, reply.length, stdout); fputc('\n', stdout); fflush(stdout);
         NSDictionary *opened = [NSJSONSerialization JSONObjectWithData:reply options:0 error:nil];
         if (![opened[@"ok"] boolValue]) return 1;
-        char *raw = NULL;
-        size_t capacity = 0;
+        // A terminal in canonical mode caps a line at MAX_CANON (1024 bytes on macOS), which is too
+        // short for `type` with long text, so the REPL reads a terminal in non-canonical mode.
+        if (interactive) YMEnterRawInput();
         for (;;) {
             if (interactive) { fputs("> ", stdout); fflush(stdout); }
-            ssize_t length = getline(&raw, &capacity, stdin);
-            if (length < 0) break;
-            NSString *line = [[NSString alloc] initWithBytes:raw length:(NSUInteger)length encoding:NSUTF8StringEncoding];
+            NSData *bytes = interactive ? YMReadTerminalLine() : YMReadPipeLine();
+            if (!bytes) break;
+            NSString *line = [[NSString alloc] initWithData:bytes encoding:NSUTF8StringEncoding];
             line = [line stringByTrimmingCharactersInSet:NSCharacterSet.newlineCharacterSet];
             if (!line.length) continue;
             NSDictionary *request = YMAgentRequestFromLine(line, &problem);
@@ -241,10 +293,9 @@ int YMAgentClientMain(int argc, const char *argv[]) {
             NSMutableDictionary *withID = [request mutableCopy];
             withID[@"id"] = @(++nextID);
             reply = YMWriteLine(fd, withID) ? YMReadLine(fd, buffer) : nil;
-            if (!reply) { fprintf(stderr, "error: the helper closed the connection\n"); free(raw); return 3; }
+            if (!reply) { fprintf(stderr, "error: the helper closed the connection\n"); return 3; }
             fwrite(reply.bytes, 1, reply.length, stdout); fputc('\n', stdout); fflush(stdout);
         }
-        free(raw);
         close(fd);
         return 0;
     }
