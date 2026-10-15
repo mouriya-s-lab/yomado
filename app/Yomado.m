@@ -16,7 +16,6 @@
 #import "MenuBarIcon.h"
 #import "PanelPresentation.h"
 #import "YMControl.h" // fork: fork-features/control
-#import "YMAgentClient.h" // fork: fork-features/agent
 
 static NSString *YMAppVersion(void) {
     return [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"—";
@@ -1893,7 +1892,6 @@ static int PreviewUI(NSString *path, NSString *state, BOOL dark) {
 int main(int argc, const char *argv[]) {
     @autoreleasepool {
         if (argc > 1 && strcmp(argv[1], "screen") == 0) return YMControlClientMain(argc, argv); // fork
-        if (argc > 1 && strcmp(argv[1], "agent") == 0) return YMAgentClientMain(argc, argv); // fork
         if (argc > 1 && strcmp(argv[1], "--preview-ui") == 0) {
             if (argc < 3 || argc > 5 || (argc == 5 && strcmp(argv[4], "light") != 0 && strcmp(argv[4], "dark") != 0)) {
                 fprintf(stderr, "Usage: Yomado --preview-ui <png-path> [empty|running|multi|trial] [light|dark]\n");
