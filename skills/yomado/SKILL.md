@@ -5,7 +5,7 @@ description: "Prepare and manage yomado virtual work screens on macOS using exis
 
 # yomado
 
-Let the agent prepare its own work screen; the user does not need to create it manually. Manage screens with yomado's `screen` command and move windows through the installed app with the agent's existing computer-use tools. This skill supplies the workflow, not a separate screenshot/input tool.
+Let the agent prepare its own work screen; the user does not need to create it manually. Manage screens with yomado's `screen` command. Operate apps on the screen through an agent session (below), which leaves the user's pointer, focus and front app alone; fall back to the app's UI and the agent's own computer-use tools only where a session cannot reach.
 
 ## Before changing anything
 
@@ -14,7 +14,7 @@ Let the agent prepare its own work screen; the user does not need to create it m
 - The macOS desktop must be logged in and unlocked. The user handles first-time macOS permission grants and any authentication. yomado needs window-control permission; the agent's tools need their own capture/input permissions.
 - Identify the task's apps and windows from the user's request. Inspect the current screen layout, physical main display, virtual display names/IDs, bounds and scale, plus the original bounds of the windows that may move. Keep this recovery record local; do not publish window titles, screenshots or machine identifiers.
 - Reuse a suitable screen belonging to this task when possible. A familiar name does not prove ownership: do not reuse, rename or close another task's screen without authority. Coordinate with any existing desktop owner before GUI operations.
-- Virtual screens share the login session, focus, keyboard and pointer. They do not provide independent agent input. When uninterrupted personal computer use is required, establish that the actual tool supports the needed non-interference before input; otherwise stop and explain the limitation.
+- Virtual screens share the login session, focus, keyboard and pointer; macOS has one key window. An agent session sends input only to the target window's process and restores the user's front app if a target activates itself, but it is not a second input seat: do not operate a window the user is using.
 
 ## Prepare the screen
 
@@ -32,6 +32,21 @@ $Y screen list
 5. Compare the display arrangement and main display with the checkpoint before moving apps. Adding or removing displays can rearrange the desktop in released versions. If an existing screen moved, stop and report the discrepancy; do not continue moving user windows or silently change the main display. Resolve layout only within the user's authority.
 
 Keep physical outputs enabled and a physical display as main during ordinary setup. Do not change power, lock, login or display settings just because the task needs a work screen. `$Y screen configure SCREEN --size … --hidpi|--no-hidpi` applies only to a closed screen; do not close an occupied screen to change it.
+
+## Operate apps through an agent session
+
+A session (design: `fork-features/agent/README.md`) launches or adopts windows, places them on the screen, and sends input to them in the background. Use it from code so the session survives across steps:
+
+```js
+const { connect } = await import("/Applications/Yomado.app/Contents/Resources/agent/yomado.ts");
+globalThis.ym = await connect({ screen: "Codex · Blender" });   // starts or creates the screen
+const [win] = (await ym.launch("Blender")).windows;            // not-yet-running apps only
+const shot = await ym.capture({ window: win.id });              // read shot.path
+const { elements } = await ym.ax(win.id);                       // refs, roles, window-local frames
+await ym.press(elements[0].ref);  await ym.click(win.id, 120, 80);  await ym.type(win.id, "text");
+```
+
+Python: `import yomado` from `Contents/Resources/agent/`; REPL: `Yomado agent --screen NAME`. Coordinates are window-local points (divide screenshot pixels by `scale`). Prefer `press`/`set` on accessibility elements, then `type`/`key`, then `click`/`drag`/`scroll`, and confirm every step with a fresh `capture`: a successful reply means the event was sent, not that the app accepted it. `key` performs `cmd` + one character through the app's menu and reports `via: menu`, `menu_disabled` or `event`. A document app may open no window when launched in the background: `launch` then returns `windows: []` and its `pid`, and `key({app: pid}, ["cmd+n"])` opens one, which the session adopts. An error `focus_stolen` or an event `focus_restored` means a target brought itself forward and the user's app was restored. `handoff` moves windows the user must look at to a physical display; `adopt` takes them back. Quit launched apps with `quit` before ending the session.
 
 ## Move only the task's windows
 
@@ -70,6 +85,6 @@ Screen creation, an accessibility tree, a running process or a synthetic preview
 
 ## Command-line boundary
 
-`Yomado screen list|create|start|close|rename|configure|delete` manages screens; `Yomado screen help` prints its usage. Exit status is 0 on success, 1 when yomado refuses or the operation fails, 2 on a usage error, and 3 when yomado cannot be reached. Window movement has no command; use the app's UI as described above.
+`Yomado screen list|create|start|close|rename|configure|delete` manages screens; `Yomado screen help` prints its usage. Exit status is 0 on success, 1 when yomado refuses or the operation fails, 2 on a usage error, and 3 when yomado cannot be reached. Agent sessions (`Yomado agent`, `yomado.ts`, `yomado.py`) move and operate windows; the panel and menu operations above remain for apps a session cannot place.
 
 `--diagnose` prints local capability/display diagnostics; do not add `--include-device-identifiers` to shared diagnostics. `--preview-ui` renders sample data, while `--self-test` and `--watchdog-test` are developer tests that can change displays; none is a work-screen setup command. Do not probe other arguments: unknown arguments open the normal app UI.

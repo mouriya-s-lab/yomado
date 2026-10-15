@@ -67,13 +67,28 @@ ym_flags=(
   "-fdebug-prefix-map=$ym_stage=."
 )
 
-"$ym_clang" "${ym_flags[@]}" -I "$ym_root/bridge" -I "$ym_root/fork-features/control" \
+"$ym_clang" "${ym_flags[@]}" -I "$ym_root/bridge" -I "$ym_root/fork-features/control" -I "$ym_root/fork-features/agent" \
   "$ym_root/app/Yomado.m" "$ym_root/app/ControlUI.m" "$ym_root/app/WindowRecovery.m" \
   "$ym_root/app/UpdateChecker.m" "$ym_root/app/MenuBarIcon.m" "$ym_root/app/PanelPresentation.m" \
   "$ym_root/app/AppWorkspace.m" "$ym_root/app/AppWorkspaceView.m" "$ym_root/bridge/VDVirtualDisplay.m" \
   "$ym_root/bridge/YMDisplayTopology.m" "$ym_root/fork-features/control/YMControl.m" \
+  "$ym_root/fork-features/agent/YMAgentClient.m" \
   -framework AppKit -framework CoreGraphics -framework ColorSync -framework IOKit -framework Carbon -framework ApplicationServices -framework QuartzCore \
   -o "$ym_bundle/Contents/MacOS/Yomado"
+
+# Fork feature: agent sessions (fork-features/agent). The helper is a nested bundle
+# with its own identifier so LaunchServices never treats it as Yomado itself.
+ym_agent="$ym_bundle/Contents/Helpers/YomadoAgent.app"
+mkdir -p "$ym_agent/Contents/MacOS"
+"$ym_clang" "${ym_flags[@]}" -I "$ym_root/fork-features/control" -I "$ym_root/fork-features/agent" \
+  "$ym_root/fork-features/agent/YomadoAgent.m" "$ym_root/fork-features/control/YMControl.m" \
+  -framework AppKit -framework ApplicationServices -framework ScreenCaptureKit -framework CoreGraphics \
+  -framework ImageIO -framework UniformTypeIdentifiers \
+  -o "$ym_agent/Contents/MacOS/YomadoAgent"
+/bin/cp -X "$ym_root/fork-features/agent/Info.plist" "$ym_agent/Contents/Info.plist"
+mkdir -p "$ym_bundle/Contents/Resources/agent"
+/bin/cp -X "$ym_root/fork-features/agent/client/yomado.ts" "$ym_root/fork-features/agent/client/yomado.py" \
+  "$ym_bundle/Contents/Resources/agent/"
 
 "$ym_clang" "${ym_flags[@]}" "$ym_root/app/Watchdog.m" \
   -framework Foundation -framework CoreGraphics \
@@ -83,8 +98,10 @@ ym_flags=(
 /bin/cp -X "$ym_icon" "$ym_bundle/Contents/Resources/Yomado.icns"
 /usr/bin/xattr -cr "$ym_bundle"
 /usr/bin/codesign "${ym_signing_flags[@]}" "$ym_bundle/Contents/MacOS/YomadoWatchdog"
+/usr/bin/codesign "${ym_signing_flags[@]}" "$ym_agent"
 /usr/bin/codesign "${ym_signing_flags[@]}" "$ym_bundle"
 ym_verify_signature "$ym_bundle/Contents/MacOS/YomadoWatchdog"
+ym_verify_signature "$ym_agent"
 ym_verify_signature "$ym_bundle"
 
 # Only generated artifacts in the selected output directory are replaced.
